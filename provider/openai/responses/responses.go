@@ -23,6 +23,7 @@ const (
 )
 
 type Provider struct {
+	headers        map[string]string
 	apiKey         string
 	baseURL        string
 	httpClient     *http.Client
@@ -30,6 +31,14 @@ type Provider struct {
 }
 
 type Option func(*Provider)
+
+// WithHeaders sets provider-wide HTTP headers, overriding defaults. The map is
+// copied when the option is created. Use sdk.WithRequestHeaders for call-scoped
+// values such as session IDs; those take precedence over these headers.
+func WithHeaders(headers map[string]string) Option {
+	headers = utils.MergeHeaders(headers)
+	return func(p *Provider) { p.headers = headers }
+}
 
 func WithAPIKey(apiKey string) Option {
 	return func(p *Provider) { p.apiKey = apiKey }
@@ -77,7 +86,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 		Method:  http.MethodGet,
 		BaseURL: p.baseURL,
 		Path:    "/models",
-		Headers: p.authHeaders(),
+		Headers: p.requestHeaders(ctx),
 		Prepare: p.prepareRequest,
 	})
 	if err != nil {
@@ -101,7 +110,7 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 		BaseURL: p.baseURL,
 		Path:    "/models",
 		Query:   map[string]string{"limit": "1"},
-		Headers: p.authHeaders(),
+		Headers: p.requestHeaders(ctx),
 		Prepare: p.prepareRequest,
 	})
 	if err != nil {
@@ -115,7 +124,7 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 		Method:  http.MethodGet,
 		BaseURL: p.baseURL,
 		Path:    "/models/" + modelID,
-		Headers: p.authHeaders(),
+		Headers: p.requestHeaders(ctx),
 		Prepare: p.prepareRequest,
 	})
 	if err == nil {
@@ -129,7 +138,7 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
 		Path:    "/responses",
-		Headers: p.authHeaders(),
+		Headers: p.requestHeaders(ctx),
 		Prepare: p.prepareRequest,
 		Body: map[string]any{
 			"model":             modelID,
@@ -151,14 +160,12 @@ func (p *Provider) ChatModel(id string) *sdk.Model {
 	}
 }
 
-func (p *Provider) authHeaders() map[string]string {
-	if p.prepareRequest != nil {
-		return nil
+func (p *Provider) requestHeaders(ctx context.Context) map[string]string {
+	var defaults map[string]string
+	if p.prepareRequest == nil && p.apiKey != "" {
+		defaults = utils.AuthHeader(p.apiKey)
 	}
-	if p.apiKey == "" {
-		return nil
-	}
-	return utils.AuthHeader(p.apiKey)
+	return utils.RequestHeaders(ctx, defaults, p.headers)
 }
 
 // ---------- DoGenerate ----------
@@ -177,7 +184,7 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
 		Path:    "/responses",
-		Headers: p.authHeaders(),
+		Headers: p.requestHeaders(ctx),
 		Prepare: p.prepareRequest,
 		Body:    wireReq,
 	})
@@ -623,7 +630,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 			Method:  http.MethodPost,
 			BaseURL: p.baseURL,
 			Path:    "/responses",
-			Headers: p.authHeaders(),
+			Headers: p.requestHeaders(ctx),
 			Prepare: p.prepareRequest,
 			Body:    wireReq,
 		}, func(ev *utils.SSEEvent) error {
