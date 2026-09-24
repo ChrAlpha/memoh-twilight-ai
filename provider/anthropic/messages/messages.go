@@ -1129,8 +1129,9 @@ func generateID() string {
 }
 
 func convertUsage(u *messagesUsage) sdk.Usage {
-	total := u.InputTokens + u.OutputTokens
+	input := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 	detail := sdk.InputTokenDetail{
+		NoCacheTokens:    u.InputTokens,
 		CacheReadTokens:  u.CacheReadInputTokens,
 		CacheWriteTokens: u.CacheCreationInputTokens,
 	}
@@ -1139,9 +1140,9 @@ func convertUsage(u *messagesUsage) sdk.Usage {
 		detail.CacheWrite1hTokens = u.CacheCreation.Ephemeral1hInputTokens
 	}
 	return sdk.Usage{
-		InputTokens:       u.InputTokens,
+		InputTokens:       input,
 		OutputTokens:      u.OutputTokens,
-		TotalTokens:       total,
+		TotalTokens:       input + u.OutputTokens,
 		CachedInputTokens: u.CacheReadInputTokens,
 		InputTokenDetails: detail,
 	}
