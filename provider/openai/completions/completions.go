@@ -735,6 +735,7 @@ func convertUsage(u *chatUsage) sdk.Usage {
 		usage.CachedInputTokens = u.PromptTokensDetails.CachedTokens
 		usage.InputTokenDetails.CacheReadTokens = u.PromptTokensDetails.CachedTokens
 	}
+	usage.InputTokenDetails.NoCacheTokens = usage.InputTokens - usage.InputTokenDetails.CacheReadTokens
 	if u.CompletionTokensDetails != nil {
 		usage.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
 		usage.OutputTokenDetails.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
