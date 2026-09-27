@@ -1,14 +1,22 @@
 package sdk
 
+// InputTokenDetail partitions Usage.InputTokens into uncached, cache-read, and
+// cache-write tokens: NoCacheTokens + CacheReadTokens + CacheWriteTokens = InputTokens.
 type InputTokenDetail struct {
-	NoCacheTokens    int `json:"noCacheTokens"`
-	CacheReadTokens  int `json:"cacheReadTokens"`
+	// NoCacheTokens counts input tokens neither read from nor written to cache.
+	// When the provider reports no cache details, it equals Usage.InputTokens.
+	NoCacheTokens int `json:"noCacheTokens"`
+	// CacheReadTokens counts input tokens read from cache.
+	CacheReadTokens int `json:"cacheReadTokens"`
+	// CacheWriteTokens counts input tokens written to cache, including all TTLs.
 	CacheWriteTokens int `json:"cacheWriteTokens"`
 	// CacheWrite5mTokens is the number of tokens written to the 5-minute cache
 	// (Anthropic-specific, populated when using cache_control with default TTL).
+	// It is a subset of CacheWriteTokens, not an additional input token count.
 	CacheWrite5mTokens int `json:"cacheWrite5mTokens,omitempty"`
 	// CacheWrite1hTokens is the number of tokens written to the 1-hour cache
 	// (Anthropic-specific, populated when using cache_control with ttl="1h").
+	// It is a subset of CacheWriteTokens, not an additional input token count.
 	CacheWrite1hTokens int `json:"cacheWrite1hTokens,omitempty"`
 }
 
@@ -18,11 +26,15 @@ type OutputTokenDetail struct {
 }
 
 type Usage struct {
-	InputTokens        int               `json:"inputTokens"`
-	OutputTokens       int               `json:"outputTokens"`
-	TotalTokens        int               `json:"totalTokens"`
-	ReasoningTokens    int               `json:"reasoningTokens,omitempty"`
-	CachedInputTokens  int               `json:"cachedInputTokens,omitempty"`
+	// InputTokens is the total input count, including cache reads and writes.
+	// Providers normalize their wire usage to this shared meaning.
+	InputTokens     int `json:"inputTokens"`
+	OutputTokens    int `json:"outputTokens"`
+	TotalTokens     int `json:"totalTokens"`
+	ReasoningTokens int `json:"reasoningTokens,omitempty"`
+	// CachedInputTokens equals InputTokenDetails.CacheReadTokens.
+	CachedInputTokens int `json:"cachedInputTokens,omitempty"`
+	// InputTokenDetails partitions InputTokens; cache TTL details are subsets.
 	InputTokenDetails  InputTokenDetail  `json:"inputTokenDetails,omitempty"`
 	OutputTokenDetails OutputTokenDetail `json:"outputTokenDetails,omitempty"`
 }
