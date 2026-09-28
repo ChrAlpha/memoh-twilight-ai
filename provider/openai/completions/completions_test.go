@@ -3,6 +3,7 @@ package completions_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1117,15 +1118,19 @@ func TestDoStream_FlushOnAbruptEnd(t *testing.T) {
 		t.Fatalf("DoStream: %v", err)
 	}
 
-	var gotReasoningEnd, gotTextEnd, gotFinish bool
+	var gotReasoningEnd, gotTextEnd bool
+	var finish *sdk.FinishPart
+	var failures []error
 	for part := range sr {
-		switch part.(type) {
+		switch part := part.(type) {
 		case *sdk.ReasoningEndPart:
 			gotReasoningEnd = true
 		case *sdk.TextEndPart:
 			gotTextEnd = true
+		case *sdk.ErrorPart:
+			failures = append(failures, part.Error)
 		case *sdk.FinishPart:
-			gotFinish = true
+			finish = part
 		}
 	}
 
@@ -1135,8 +1140,41 @@ func TestDoStream_FlushOnAbruptEnd(t *testing.T) {
 	if !gotTextEnd {
 		t.Error("missing TextEndPart on abrupt stream end")
 	}
-	if !gotFinish {
-		t.Error("missing FinishPart on abrupt stream end")
+	if len(failures) != 1 || !errors.Is(failures[0], sdk.ErrStreamIncomplete) {
+		t.Errorf("ErrorParts = %v, want one wrapping sdk.ErrStreamIncomplete", failures)
+	}
+	if finish == nil || finish.FinishReason != sdk.FinishReasonError {
+		t.Errorf("FinishPart = %+v, want one with FinishReasonError", finish)
+	}
+}
+
+func TestDoStream_FinishReasonWithoutDoneIsComplete(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"id":"c1","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`+"\n\n")
+	}))
+	defer srv.Close()
+
+	p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(srv.URL))
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model:    "m",
+		Messages: []sdk.Message{sdk.UserMessage("hi")},
+	})
+	if err != nil {
+		t.Fatalf("DoStream: %v", err)
+	}
+
+	var finish *sdk.FinishPart
+	for part := range sr {
+		switch part := part.(type) {
+		case *sdk.ErrorPart:
+			t.Errorf("unexpected ErrorPart: %v", part.Error)
+		case *sdk.FinishPart:
+			finish = part
+		}
+	}
+	if finish == nil || finish.FinishReason != sdk.FinishReasonStop {
+		t.Errorf("FinishPart = %+v, want one with FinishReasonStop", finish)
 	}
 }
 

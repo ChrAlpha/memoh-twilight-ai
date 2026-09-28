@@ -15,7 +15,10 @@ import (
 // must decode to. Every provider package, chat or not, tables its error
 // decoder with these.
 type ErrorCase struct {
-	Name   string
+	Name string
+	// Status is the HTTP status of the response. 0 means the error arrived
+	// after a 2xx status line, in the body or as a stream event, and Body is
+	// that object or the event's data.
 	Status int
 	Header http.Header
 	Body   string
@@ -23,18 +26,23 @@ type ErrorCase struct {
 	Want sdk.APIError
 }
 
-// RunErrorCases builds each case's response through utils.NewHTTPError with
-// decode and compares the result with the case.
+// RunErrorCases builds each case's error through utils.NewHTTPError, or
+// through utils.NewBodyError when its Status is 0, with decode and compares
+// the result with the case.
 func RunErrorCases(t *testing.T, provider string, decode utils.ErrorDecoder, cases []ErrorCase) {
 	t.Helper()
 	for _, c := range cases {
 		t.Run(c.Name, func(t *testing.T) {
-			resp := &http.Response{
-				StatusCode: c.Status,
-				Header:     c.Header,
-				Body:       io.NopCloser(bytes.NewBufferString(c.Body)),
+			var got *sdk.APIError
+			if c.Status == 0 {
+				got = utils.NewBodyError(provider, c.Header, []byte(c.Body), decode)
+			} else {
+				got = utils.NewHTTPError(provider, &http.Response{
+					StatusCode: c.Status,
+					Header:     c.Header,
+					Body:       io.NopCloser(bytes.NewBufferString(c.Body)),
+				}, decode)
 			}
-			got := utils.NewHTTPError(provider, resp, decode)
 			want := c.Want
 			for _, f := range []struct {
 				field     string

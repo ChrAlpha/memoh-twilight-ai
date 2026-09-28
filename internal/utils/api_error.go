@@ -32,6 +32,24 @@ func NewHTTPError(provider string, resp *http.Response, decode ErrorDecoder) *sd
 	return e
 }
 
+// NewBodyError builds the APIError for a failure the provider reported after a
+// 2xx status line: an error object inside the body or an error event inside a
+// stream. body is that object or the event's data. StatusCode is 0, Kind
+// starts at KindUnknown, and decode, when non-nil, fills in the rest as it
+// does for NewHTTPError.
+func NewBodyError(provider string, header http.Header, body []byte, decode ErrorDecoder) *sdk.APIError {
+	e := &sdk.APIError{
+		Provider: provider,
+		Kind:     sdk.KindUnknown,
+		Header:   header,
+		Body:     body,
+	}
+	if decode != nil {
+		decode(e)
+	}
+	return e
+}
+
 // kindFromStatus is the classification used when the provider's type or code
 // does not identify one.
 func kindFromStatus(status int) sdk.ErrorKind {

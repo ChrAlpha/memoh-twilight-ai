@@ -50,6 +50,22 @@ type Fixture struct {
 	// compared; Header and Body must be what ReplyError wrote. Nil only checks
 	// that the reply becomes an error.
 	WantError *sdk.APIError
+	// ReplyErrorBody answers a non-streaming request with a 2xx body that
+	// reports a failure. Nil skips that half of the in-band error case.
+	ReplyErrorBody http.HandlerFunc
+	// ReplyErrorEvent answers a streaming request with a 2xx stream that
+	// reports a failure in an event after the stream started. Nil skips that
+	// half of the in-band error case.
+	ReplyErrorEvent http.HandlerFunc
+	// WantInBandError is the *sdk.APIError that ReplyErrorBody and
+	// ReplyErrorEvent must surface. It is compared as WantError is; its
+	// StatusCode is 0, and Body must be the error object or event data found
+	// in what the handler wrote.
+	WantInBandError *sdk.APIError
+	// ReplyStreamIncomplete answers a streaming request with a stream that
+	// ends cleanly before the event that marks it complete. Nil skips the
+	// case.
+	ReplyStreamIncomplete http.HandlerFunc
 	// Secret is the credential NewProvider authenticates with. It must not
 	// appear in the error text.
 	Secret string
@@ -97,6 +113,9 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("stream", func(t *testing.T) { testStream(t, factory(t)) })
 	t.Run("paths agree", func(t *testing.T) { testPathsAgree(t, factory(t)) })
 	t.Run("error", func(t *testing.T) { testError(t, factory(t)) })
+	t.Run("in-band error", func(t *testing.T) { testInBandError(t, factory(t)) })
+	t.Run("incomplete stream", func(t *testing.T) { testStreamIncomplete(t, factory(t)) })
+	t.Run("malformed stream", func(t *testing.T) { testStreamMalformed(t, factory(t)) })
 }
 
 // The markers travel through the Request untouched and must come out of the
@@ -330,32 +349,128 @@ func testError(t *testing.T, f Fixture) {
 	if err == nil {
 		t.Fatalf("an error reply mapped to a success: %+v", result)
 	}
-	wantAPIError(t, "generate", f, err, &written)
+	wantAPIError(t, "generate", f, f.WantError, err, &written)
 	if f.ReplyStream == nil {
 		return
 	}
-	stream, err := f.model(p).Stream(ctx, req)
-	if err == nil {
-		for range stream.Parts {
-		}
-		_, err = stream.Result()
-	}
+	err = streamErr(t, f, p, req)
 	if err == nil {
 		t.Fatal("stream: an error reply mapped to a success")
 	}
-	wantAPIError(t, "stream", f, err, &written)
+	wantAPIError(t, "stream", f, f.WantError, err, &written)
 }
 
-func wantAPIError(t *testing.T, op string, f Fixture, err error, written *capturedReply) {
+// testInBandError covers a failure reported after a 2xx status line: in the
+// body of a non-streaming reply, or in an error event of a stream that already
+// started. Both must surface as the *sdk.APIError the reply describes, with no
+// status code.
+func testInBandError(t *testing.T, f Fixture) {
+	ctx := context.Background()
+	if f.ReplyErrorBody == nil && f.ReplyErrorEvent == nil {
+		t.Skip("provider has no in-band error fixture")
+	}
+	if f.WantInBandError == nil {
+		t.Fatal("fixture has an in-band error reply but no WantInBandError")
+	}
+	if f.ReplyErrorBody != nil {
+		var written capturedReply
+		p, _ := serve(t, f, written.capture(f.ReplyErrorBody))
+		req := f.withOptions(p, request())
+		req.Model = f.ModelID
+		result, err := f.model(p).Generate(ctx, req)
+		if err == nil {
+			t.Fatalf("generate: an in-band error mapped to a success: %+v", result)
+		}
+		wantAPIError(t, "generate", f, f.WantInBandError, err, &written)
+	}
+	if f.ReplyErrorEvent != nil {
+		var written capturedReply
+		p, _ := serve(t, f, written.capture(f.ReplyErrorEvent))
+		req := f.withOptions(p, request())
+		req.Model = f.ModelID
+		err := streamErr(t, f, p, req)
+		if err == nil {
+			t.Fatal("stream: an error event mapped to a success")
+		}
+		wantAPIError(t, "stream", f, f.WantInBandError, err, &written)
+	}
+}
+
+// testStreamIncomplete covers the truncated-success failure: a stream that
+// ends without its terminal event must fail with sdk.ErrStreamIncomplete
+// rather than finish as if the response were complete.
+func testStreamIncomplete(t *testing.T, f Fixture) {
+	if f.ReplyStreamIncomplete == nil {
+		t.Skip("provider has no incomplete stream fixture")
+	}
+	p, _ := serve(t, f, f.ReplyStreamIncomplete)
+	req := f.withOptions(p, request())
+	req.Model = f.ModelID
+	if err := streamErr(t, f, p, req); !errors.Is(err, sdk.ErrStreamIncomplete) {
+		t.Fatalf("stream error = %v, want sdk.ErrStreamIncomplete", err)
+	}
+}
+
+// testStreamMalformed covers an event the provider cannot decode. Every chat
+// provider here streams server-sent events with JSON data, so an event whose
+// data is not JSON is malformed in each wire format. It must fail the stream
+// with one ErrorPart.
+func testStreamMalformed(t *testing.T, f Fixture) {
+	if f.ReplyStream == nil {
+		t.Skip("provider does not stream")
+	}
+	p, _ := serve(t, f, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"providertest\": \n\n")
+	})
+	req := f.withOptions(p, request())
+	req.Model = f.ModelID
+	if err := streamErr(t, f, p, req); err == nil {
+		t.Fatal("a malformed event mapped to a success")
+	}
+}
+
+// streamErr streams req and returns the stream's error. A stream fails with
+// one ErrorPart, and the FinishPart that closes it must say that it failed.
+func streamErr(t *testing.T, f Fixture, p sdk.Provider, req sdk.Request) error {
 	t.Helper()
-	if f.WantError == nil {
+	stream, err := f.model(p).Stream(context.Background(), req)
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for part := range stream.Parts {
+		switch part := part.(type) {
+		case *sdk.ErrorPart:
+			failures = append(failures, part.Error)
+		case *sdk.FinishPart:
+			if len(failures) > 0 && part.FinishReason != sdk.FinishReasonError {
+				t.Errorf("stream: FinishPart after an ErrorPart has finish reason %q, want %q", part.FinishReason, sdk.FinishReasonError)
+			}
+		}
+	}
+	_, err = stream.Result()
+	if len(failures) > 1 {
+		t.Errorf("stream: %d ErrorParts, want at most one: %v", len(failures), failures)
+	}
+	if err != nil && len(failures) == 0 {
+		t.Errorf("stream: failed with %v but sent no ErrorPart", err)
+	}
+	return err
+}
+
+// wantAPIError compares err with want. A reply with a status carries the
+// error as its whole body; a failure reported after a 2xx status line carries
+// it inside what the handler wrote.
+func wantAPIError(t *testing.T, op string, f Fixture, want *sdk.APIError, err error, written *capturedReply) {
+	t.Helper()
+	if want == nil {
 		return
 	}
 	var got *sdk.APIError
 	if !errors.As(err, &got) {
 		t.Fatalf("%s: error %q (%T) does not unwrap to *sdk.APIError", op, err, err)
 	}
-	want := f.WantError
 	for _, c := range []struct {
 		field     string
 		got, want any
@@ -376,7 +491,11 @@ func wantAPIError(t *testing.T, op string, f Fixture, err error, written *captur
 		t.Errorf("%s: KindOf = %q, want %q", op, kind, want.Kind)
 	}
 	body, header := written.last()
-	if !bytes.Equal(got.Body, body) {
+	if want.StatusCode == 0 {
+		if len(got.Body) == 0 || !bytes.Contains(body, got.Body) {
+			t.Errorf("%s: APIError.Body = %q, want the error found in the reply %q", op, got.Body, body)
+		}
+	} else if !bytes.Equal(got.Body, body) {
 		t.Errorf("%s: APIError.Body = %q, want the reply body %q", op, got.Body, body)
 	}
 	for name := range header {
@@ -388,7 +507,7 @@ func wantAPIError(t *testing.T, op string, f Fixture, err error, written *captur
 		if f.Secret != "" && strings.Contains(text, f.Secret) {
 			t.Errorf("%s: error text %q contains the credential", op, text)
 		}
-		if strings.Contains(text, string(body)) {
+		if strings.Contains(text, string(body)) || (len(got.Body) > 0 && strings.Contains(text, string(got.Body))) {
 			t.Errorf("%s: error text %q contains the raw reply body", op, text)
 		}
 	}

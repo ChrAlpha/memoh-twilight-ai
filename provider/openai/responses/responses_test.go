@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/provider/openai/responses"
+	"github.com/felinics/twilight/provider/providertest"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -1139,43 +1140,92 @@ func TestResponsesDoStream_NoModel(t *testing.T) {
 	}
 }
 
-func TestResponsesDoStream_ErrorEvent(t *testing.T) {
+// streamFailure streams one event and returns the stream's FinishPart and its
+// single error.
+func streamFailure(t *testing.T, event, data string) (*sdk.FinishPart, error) {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		flusher := w.(http.Flusher)
-
-		fmt.Fprintf(w, "event: error\ndata: %s\n\n",
-			`{"type":"error","sequence_number":0,"error":{"type":"server_error","code":"server_error","message":"Internal error"}}`)
-		flusher.Flush()
+		w.Header().Set("x-request-id", "req_stream")
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+		w.(http.Flusher).Flush()
 	}))
 	defer srv.Close()
 
 	p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
 	sr, err := p.DoStream(context.Background(), sdk.Request{
-		Model:    "gpt-4o-mini",
+		Model:    "gpt-5.6",
 		Messages: []sdk.Message{sdk.UserMessage("test")},
 	})
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
 	}
-
-	var gotError bool
+	var (
+		errorsSeen []error
+		finish     *sdk.FinishPart
+	)
 	for part := range sr {
-		if _, ok := part.(*sdk.ErrorPart); ok {
-			gotError = true
+		switch part := part.(type) {
+		case *sdk.ErrorPart:
+			errorsSeen = append(errorsSeen, part.Error)
+		case *sdk.FinishPart:
+			finish = part
 		}
 	}
-	if !gotError {
-		t.Error("expected ErrorPart from error event")
+	if len(errorsSeen) != 1 {
+		t.Fatalf("ErrorPart count = %d, want 1 (%v)", len(errorsSeen), errorsSeen)
+	}
+	if finish == nil {
+		t.Fatal("expected a FinishPart after the failure")
+	}
+	if finish.FinishReason != sdk.FinishReasonError {
+		t.Errorf("FinishReason = %q, want %q", finish.FinishReason, sdk.FinishReasonError)
+	}
+	return finish, errorsSeen[0]
+}
+
+// The API reference puts the error event's code and message at the top level
+// (openai-go's ResponseErrorEvent,
+// https://github.com/openai/openai-go/blob/d7fd0c65cc247957d5b247ad42283fc8e4061868/responses/response.go);
+// the Codex CLI reads them from a nested error object
+// (https://github.com/openai/codex/blob/1b1835f751ebdc0cfc50b3fe55d4571dbb294563/codex-rs/codex-api/src/sse/responses.rs).
+func TestResponsesDoStream_ErrorEvent(t *testing.T) {
+	tests := []struct {
+		name, data string
+		wantType   string
+	}{
+		{
+			name: "top-level",
+			data: `{"type":"error","code":"server_error","message":"Internal error","param":null,"sequence_number":0}`,
+		},
+		{
+			name:     "nested",
+			data:     `{"type":"error","sequence_number":0,"error":{"type":"server_error","code":"server_error","message":"Internal error"}}`,
+			wantType: "server_error",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := streamFailure(t, "error", tt.data)
+			apiErr := providertest.WantAPIError(t, err, "openai-responses", 0, sdk.KindServerError)
+			if apiErr.Type != tt.wantType || apiErr.Code != "server_error" || apiErr.Message != "Internal error" || apiErr.RequestID != "req_stream" {
+				t.Errorf("Type, Code, Message, RequestID = %q, %q, %q, %q", apiErr.Type, apiErr.Code, apiErr.Message, apiErr.RequestID)
+			}
+			if string(apiErr.Body) != tt.data {
+				t.Errorf("Body = %q, want the event data", apiErr.Body)
+			}
+		})
 	}
 }
 
 func TestResponsesDoStream_ResponseFailed(t *testing.T) {
 	tests := []struct {
-		name      string
-		response  string
-		wantError string
-		wantUsage sdk.Usage
+		name        string
+		response    string
+		wantCode    string
+		wantMessage string
+		wantKind    sdk.ErrorKind
+		wantUsage   sdk.Usage
 	}{
 		{
 			name: "structured error and usage",
@@ -1183,7 +1233,9 @@ func TestResponsesDoStream_ResponseFailed(t *testing.T) {
 				`"type":"server_error","code":"server_error","message":"generation failed"},` +
 				`"usage":{"input_tokens":7,"output_tokens":2,"input_tokens_details":{"cached_tokens":3},` +
 				`"output_tokens_details":{"reasoning_tokens":1}}}}`,
-			wantError: "openai-responses: server_error: generation failed",
+			wantCode:    "server_error",
+			wantMessage: "generation failed",
+			wantKind:    sdk.KindServerError,
 			wantUsage: sdk.Usage{
 				InputTokens:       7,
 				OutputTokens:      2,
@@ -1193,51 +1245,21 @@ func TestResponsesDoStream_ResponseFailed(t *testing.T) {
 			},
 		},
 		{
-			name:      "missing error payload",
-			response:  `{"type":"response.failed","response":{"status":"failed"}}`,
-			wantError: "openai-responses: response failed",
+			name:     "missing error payload",
+			response: `{"type":"response.failed","response":{"status":"failed"}}`,
+			wantKind: sdk.KindUnknown,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "text/event-stream")
-				fmt.Fprintf(w, "event: response.failed\ndata: %s\n\n", tt.response)
-				w.(http.Flusher).Flush()
-			}))
-			defer srv.Close()
-
-			p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
-			sr, err := p.DoStream(context.Background(), sdk.Request{
-				Model:    "gpt-5.6",
-				Messages: []sdk.Message{sdk.UserMessage("test")},
-			})
-			if err != nil {
-				t.Fatalf("DoStream: %v", err)
+			finish, err := streamFailure(t, "response.failed", tt.response)
+			apiErr := providertest.WantAPIError(t, err, "openai-responses", 0, tt.wantKind)
+			if apiErr.Code != tt.wantCode || apiErr.Message != tt.wantMessage {
+				t.Errorf("Code, Message = %q, %q; want %q, %q", apiErr.Code, apiErr.Message, tt.wantCode, tt.wantMessage)
 			}
-
-			var (
-				errorsSeen []error
-				finish     *sdk.FinishPart
-			)
-			for part := range sr {
-				switch part := part.(type) {
-				case *sdk.ErrorPart:
-					errorsSeen = append(errorsSeen, part.Error)
-				case *sdk.FinishPart:
-					finish = part
-				}
-			}
-
-			if len(errorsSeen) != 1 {
-				t.Fatalf("ErrorPart count = %d, want 1 (%v)", len(errorsSeen), errorsSeen)
-			}
-			if got := errorsSeen[0].Error(); got != tt.wantError {
-				t.Errorf("error = %q, want %q", got, tt.wantError)
-			}
-			if finish == nil {
-				t.Fatal("expected FinishPart after response.failed")
+			if string(apiErr.Body) != tt.response {
+				t.Errorf("Body = %q, want the event data", apiErr.Body)
 			}
 			if finish.TotalUsage.InputTokens != tt.wantUsage.InputTokens ||
 				finish.TotalUsage.OutputTokens != tt.wantUsage.OutputTokens ||

@@ -17,6 +17,8 @@ type SSEEvent struct {
 	Event string
 	Data  string
 	ID    string
+	// Header is the stream's HTTP response header, shared by every event.
+	Header http.Header
 }
 
 // FetchSSE sends a request and invokes onEvent for each SSE event in the stream.
@@ -24,6 +26,8 @@ type SSEEvent struct {
 //
 // The onEvent callback can return ErrStreamDone to stop reading and return nil,
 // or any other error to abort the stream (that error is returned to the caller).
+// FetchSSE also returns nil when the body ends cleanly, so a caller whose
+// protocol has a terminal event must itself check that it arrived.
 //
 // Common usage with OpenAI-compatible APIs:
 //
@@ -61,7 +65,7 @@ func FetchSSE(ctx context.Context, client *http.Client, opts *RequestOptions, on
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
-	event := &SSEEvent{}
+	event := &SSEEvent{Header: resp.Header}
 	var dataLines []string
 
 	for scanner.Scan() {
@@ -76,7 +80,7 @@ func FetchSSE(ctx context.Context, client *http.Client, opts *RequestOptions, on
 					}
 					return err
 				}
-				event = &SSEEvent{}
+				event = &SSEEvent{Header: resp.Header}
 				dataLines = nil
 			}
 			continue

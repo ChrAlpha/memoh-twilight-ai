@@ -73,6 +73,14 @@ func BuildRequest(ctx context.Context, opts *RequestOptions) (*http.Request, err
 // FetchJSON sends a JSON request and decodes the response into type T.
 // Non-2xx responses are returned as *sdk.APIError.
 func FetchJSON[T any](ctx context.Context, client *http.Client, opts *RequestOptions) (*T, error) {
+	result, _, _, err := FetchJSONBody[T](ctx, client, opts)
+	return result, err
+}
+
+// FetchJSONBody is FetchJSON that also returns the response header and the raw
+// body, for an API that reports some failures as an error object inside a 2xx
+// body; see NewBodyError.
+func FetchJSONBody[T any](ctx context.Context, client *http.Client, opts *RequestOptions) (result *T, header http.Header, body []byte, err error) {
 	if opts.Headers == nil {
 		opts.Headers = make(map[string]string)
 	}
@@ -82,24 +90,28 @@ func FetchJSON[T any](ctx context.Context, client *http.Client, opts *RequestOpt
 
 	req, err := BuildRequest(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, nil, nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, NewHTTPError(opts.Provider, resp, opts.DecodeError)
+		return nil, nil, nil, NewHTTPError(opts.Provider, resp, opts.DecodeError)
 	}
 
-	var result T
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read response: %w", err)
 	}
-	return &result, nil
+	result = new(T)
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(result); err != nil {
+		return nil, nil, nil, fmt.Errorf("decode response: %w", err)
+	}
+	return result, resp.Header, body, nil
 }
 
 // FetchRaw sends a request and returns the raw *http.Response.

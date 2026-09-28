@@ -36,6 +36,10 @@ const (
   "request_id": "req_011CSHoEeqs5C35K2UUqR7Fy"
 }`
 	conformanceRequestID = "req_018EeWyXxfu5pfWkrYcMdjWG"
+
+	// conformanceErrorEvent is the error event's data, verbatim from
+	// https://platform.claude.com/docs/en/api/messages-streaming#error-events.
+	conformanceErrorEvent = `{"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}`
 )
 
 func conformanceProvider(baseURL string) sdk.Provider {
@@ -95,6 +99,29 @@ func textFixture(t *testing.T) providertest.Fixture {
 			Message:    "The requested resource could not be found.",
 			RequestID:  conformanceRequestID,
 			Kind:       sdk.KindUnknown,
+		},
+		// The Messages API reports a non-streaming failure only with an error
+		// status, so there is no ReplyErrorBody.
+		ReplyErrorEvent: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("request-id", conformanceRequestID)
+			sseEvents(w,
+				[2]string{"message_start", `{"type":"message_start","message":{"id":"msg_conf_text","type":"message","model":"` + conformanceModel + `","role":"assistant","content":[],"usage":{"input_tokens":5,"output_tokens":0}}}`},
+				[2]string{"error", conformanceErrorEvent},
+			)
+		},
+		WantInBandError: &sdk.APIError{
+			Provider:  "anthropic-messages",
+			Type:      "overloaded_error",
+			Message:   "Overloaded",
+			RequestID: conformanceRequestID,
+			Kind:      sdk.KindServerError,
+		},
+		ReplyStreamIncomplete: func(w http.ResponseWriter, r *http.Request) {
+			sseEvents(w,
+				[2]string{"message_start", `{"type":"message_start","message":{"id":"msg_conf_text","type":"message","model":"` + conformanceModel + `","role":"assistant","content":[],"usage":{"input_tokens":5,"output_tokens":0}}}`},
+				[2]string{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+				[2]string{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"conformance"}}`},
+			)
 		},
 		Secret: conformanceAPIKey,
 		Want: providertest.Want{

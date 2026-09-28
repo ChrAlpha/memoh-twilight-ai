@@ -448,26 +448,31 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 			DecodeError: decodeError,
 		}, func(ev *utils.SSEEvent) error {
 			if ev.Data == "[DONE]" {
+				sp.done = true
 				return utils.ErrStreamDone
 			}
 
 			var chunk chatChunkResponse
 			if err := json.Unmarshal([]byte(ev.Data), &chunk); err != nil {
-				sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: unmarshal chunk: %w", err)})
-				return err
+				return fmt.Errorf("unmarshal chunk: %w", err)
 			}
 
 			return sp.processChunk(&chunk)
 		})
 
+		if err == nil && !sp.done {
+			err = sdk.ErrStreamIncomplete
+		}
+		finish := sp.finishReason
 		if err != nil {
 			sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: stream failed: %w", err)})
+			finish = sdk.FinishReasonError
 		}
 
 		sp.flush()
 
 		sp.send(&sdk.FinishPart{
-			FinishReason:    sp.finishReason,
+			FinishReason:    finish,
 			RawFinishReason: sp.rawFinishReason,
 			TotalUsage:      sp.usage,
 		})

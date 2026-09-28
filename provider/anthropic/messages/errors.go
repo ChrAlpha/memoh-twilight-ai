@@ -9,6 +9,8 @@ import (
 
 // errorBody is the Messages API error body:
 // {"type":"error","error":{"type":"...","message":"..."},"request_id":"req_..."}.
+// A stream's error event carries the same object as its data
+// (https://platform.claude.com/docs/en/api/messages-streaming#error-events).
 type errorBody struct {
 	Error struct {
 		Type    string `json:"type"`

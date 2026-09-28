@@ -857,6 +857,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		h := &streamHandler{
 			ch:           ch,
 			ctx:          ctx,
+			provider:     p.Name(),
 			activeBlocks: map[int]*streamingBlock{},
 		}
 
@@ -877,12 +878,19 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 			DecodeError: decodeError,
 		}, h.handleEvent)
 
+		// A complete stream ends with message_stop
+		// (https://platform.claude.com/docs/en/api/messages-streaming).
+		if err == nil && !h.done {
+			err = sdk.ErrStreamIncomplete
+		}
+		finish := h.finishReason
 		if err != nil {
 			h.send(&sdk.ErrorPart{Error: fmt.Errorf("anthropic: stream failed: %w", err)})
+			finish = sdk.FinishReasonError
 		}
 
 		h.send(&sdk.FinishPart{
-			FinishReason:    h.finishReason,
+			FinishReason:    finish,
 			RawFinishReason: h.rawFinishReason,
 			TotalUsage:      h.usage,
 		})
@@ -894,7 +902,10 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 type streamHandler struct {
 	ch           chan sdk.StreamPart
 	ctx          context.Context
+	provider     string
 	activeBlocks map[int]*streamingBlock
+	// done is set by message_stop, the event that ends a complete stream.
+	done bool
 
 	rawFinishReason string
 	finishReason    sdk.FinishReason
@@ -915,8 +926,7 @@ func (h *streamHandler) send(part sdk.StreamPart) bool {
 func (h *streamHandler) handleEvent(ev *utils.SSEEvent) error {
 	var event streamEvent
 	if err := json.Unmarshal([]byte(ev.Data), &event); err != nil {
-		h.send(&sdk.ErrorPart{Error: fmt.Errorf("anthropic: unmarshal event: %w", err)})
-		return err
+		return fmt.Errorf("unmarshal event: %w", err)
 	}
 
 	switch event.Type {
@@ -931,11 +941,15 @@ func (h *streamHandler) handleEvent(ev *utils.SSEEvent) error {
 	case "message_delta":
 		h.onMessageDelta(&event)
 	case "message_stop":
+		h.done = true
 		return utils.ErrStreamDone
 	case "ping":
 		// ignore
 	case "error":
-		h.onError(&event)
+		// The event's data is the error body of an HTTP error, sent after
+		// the 200 status line
+		// (https://platform.claude.com/docs/en/api/messages-streaming#error-events).
+		return utils.NewBodyError(h.provider, ev.Header, []byte(ev.Data), decodeError)
 	}
 	return nil
 }
@@ -1076,14 +1090,6 @@ func (h *streamHandler) onMessageDelta(event *streamEvent) {
 			ModelID: h.messageModel,
 		},
 	})
-}
-
-func (h *streamHandler) onError(event *streamEvent) {
-	errMsg := "unknown error"
-	if event.Delta != nil && event.Delta.Text != "" {
-		errMsg = event.Delta.Text
-	}
-	h.send(&sdk.ErrorPart{Error: fmt.Errorf("anthropic: stream error: %s", errMsg)})
 }
 
 // streamingBlock accumulates one content block's deltas. args and signature

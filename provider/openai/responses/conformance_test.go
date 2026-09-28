@@ -110,6 +110,36 @@ func textFixture(t *testing.T) providertest.Fixture {
 			RequestID:  conformanceRequestID,
 			Kind:       sdk.KindAuthentication,
 		},
+		// A failed response carries the same error object in the 2xx body of
+		// a non-streaming request and in the response.failed event of a
+		// stream (https://platform.openai.com/docs/api-reference/responses/object).
+		ReplyErrorBody: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("x-request-id", conformanceRequestID)
+			_, _ = w.Write([]byte(`{"id":"resp_conf_failed","object":"response","status":"failed","model":"` + conformanceModel + `",` +
+				`"error":{"code":"server_error","message":"The model failed to generate a response."},"output":[]}`))
+		},
+		ReplyErrorEvent: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("x-request-id", conformanceRequestID)
+			sseEvents(w,
+				[2]string{"response.created", `{"type":"response.created","response":{"id":"resp_conf_failed","created_at":1700000000,"model":"` + conformanceModel + `"}}`},
+				[2]string{"response.failed", `{"type":"response.failed","sequence_number":1,"response":{"id":"resp_conf_failed","status":"failed",` +
+					`"error":{"code":"server_error","message":"The model failed to generate a response."},"usage":null}}`},
+			)
+		},
+		WantInBandError: &sdk.APIError{
+			Provider:  "openai-responses",
+			Code:      "server_error",
+			Message:   "The model failed to generate a response.",
+			RequestID: conformanceRequestID,
+			Kind:      sdk.KindServerError,
+		},
+		ReplyStreamIncomplete: func(w http.ResponseWriter, r *http.Request) {
+			sseEvents(w,
+				[2]string{"response.created", `{"type":"response.created","response":{"id":"resp_conf_text","created_at":1700000000,"model":"` + conformanceModel + `"}}`},
+				[2]string{"response.output_text.delta", `{"type":"response.output_text.delta","item_id":"msg_conf_text","delta":"conformance"}`},
+			)
+		},
 		Secret: "test-key",
 		Want: providertest.Want{
 			Text:         "conformance text",

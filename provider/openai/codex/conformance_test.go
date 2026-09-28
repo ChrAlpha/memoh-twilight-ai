@@ -118,6 +118,31 @@ func conformanceWantError() *sdk.APIError {
 	}
 }
 
+// codexFailedMessage and codexFailedEvent are the Codex CLI's response.failed
+// test fixture, verbatim:
+// https://github.com/openai/codex/blob/1b1835f751ebdc0cfc50b3fe55d4571dbb294563/codex-rs/codex-api/src/sse/responses.rs
+const (
+	codexFailedMessage = "Rate limit reached for gpt-5.1 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."
+	codexFailedEvent   = `{"type":"response.failed","sequence_number":3,"response":{"id":"resp_689bcf18d7f08194bf3440ba62fe05d803fee0cdac429894","object":"response","created_at":1755041560,"status":"failed","background":false,"error":{"code":"rate_limit_exceeded","message":"` + codexFailedMessage + `"}, "usage":null,"user":null,"metadata":{}}}`
+)
+
+// conformanceFailed answers with a stream that fails after it started. It
+// serves both paths, since sdk.Generate streams too.
+func conformanceFailed(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("x-request-id", "req_conformance_failed")
+	openCodexStream(w)
+	codexSSE(w, "response.created", codexCreated("resp_conf_failed"))
+	codexSSE(w, "response.failed", codexFailedEvent)
+}
+
+// conformanceIncomplete answers with a stream that closes before
+// response.completed.
+func conformanceIncomplete(w http.ResponseWriter, r *http.Request) {
+	openCodexStream(w)
+	codexSSE(w, "response.created", codexCreated("resp_conf_text"))
+	codexSSE(w, "response.output_text.delta", `{"item_id":"msg_conf_1","delta":"conformance"}`)
+}
+
 // textFixture answers with plain text. The answer arrives split across two
 // output_text deltas so the fixture also covers delta accumulation.
 func textFixture(t *testing.T) providertest.Fixture {
@@ -139,7 +164,18 @@ func textFixture(t *testing.T) providertest.Fixture {
 		ReplyStream: reply,
 		ReplyError:  conformanceError,
 		WantError:   conformanceWantError(),
-		Secret:      "test-key",
+		// Generate streams, so the failed stream answers both paths.
+		ReplyErrorBody:  conformanceFailed,
+		ReplyErrorEvent: conformanceFailed,
+		WantInBandError: &sdk.APIError{
+			Provider:  "openai-codex",
+			Code:      "rate_limit_exceeded",
+			Message:   codexFailedMessage,
+			RequestID: "req_conformance_failed",
+			Kind:      sdk.KindRateLimited,
+		},
+		ReplyStreamIncomplete: conformanceIncomplete,
+		Secret:                "test-key",
 		Want: providertest.Want{
 			Text:         "conformance text",
 			FinishReason: sdk.FinishReasonStop,

@@ -149,6 +149,13 @@ func textFixture(t *testing.T) providertest.Fixture {
 				`{"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7}}`,
 			)
 		},
+		// Gemini has no end-of-stream event; a complete stream's last
+		// candidate carries its finishReason.
+		ReplyStreamIncomplete: func(w http.ResponseWriter, r *http.Request) {
+			googleSSE(w,
+				`{"candidates":[{"content":{"role":"model","parts":[{"text":"conformance "}]}}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1,"totalTokenCount":6}}`,
+			)
+		},
 		ReplyError: googleErrorHandler(t),
 		WantError:  googleWantError(),
 		Secret:     conformanceAPIKey,

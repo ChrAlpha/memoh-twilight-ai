@@ -164,6 +164,9 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 			usage            sdk.Usage
 			incompleteReason string
 			hasFunctionCall  bool
+			// done is set by response.completed or response.incomplete, the
+			// events that end a response that did not fail.
+			done bool
 
 			textStartSent     bool
 			activeReasoningID string
@@ -358,27 +361,39 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 						Timestamp: sdk.TimestampFromUnix(responseCreated),
 					},
 				})
+				done = true
 				return utils.ErrStreamDone
 
-			case "error":
-				var chunk codexErrorChunk
-				if json.Unmarshal([]byte(ev.Data), &chunk) != nil {
-					return nil
+			case "response.failed":
+				// The failed response still reports the usage it consumed.
+				var chunk codexCompletedChunk
+				if json.Unmarshal([]byte(ev.Data), &chunk) == nil && chunk.Response.Usage != nil {
+					usage = convertCodexUsage(chunk.Response.Usage)
 				}
-				send(&sdk.ErrorPart{Error: fmt.Errorf("openai-codex: %s: %s", chunk.Error.Code, chunk.Error.Message)})
-				return utils.ErrStreamDone
+				return utils.NewBodyError(p.Name(), ev.Header, []byte(ev.Data), decodeFailedEvent)
+
+			case "error":
+				return utils.NewBodyError(p.Name(), ev.Header, []byte(ev.Data), decodeErrorEvent)
 			}
 
 			return nil
 		})
 
+		// The Codex CLI treats a stream that closes before response.completed
+		// as failed
+		// (https://github.com/openai/codex/blob/1b1835f751ebdc0cfc50b3fe55d4571dbb294563/codex-rs/codex-api/src/sse/responses.rs).
+		if err == nil && !done {
+			err = sdk.ErrStreamIncomplete
+		}
+		finishReason := mapCodexFinishReason(incompleteReason, hasFunctionCall)
 		if err != nil {
 			send(&sdk.ErrorPart{Error: fmt.Errorf("openai-codex: stream failed: %w", err)})
+			finishReason = sdk.FinishReasonError
 		}
 
 		flush()
 		send(&sdk.FinishPart{
-			FinishReason:    mapCodexFinishReason(incompleteReason, hasFunctionCall),
+			FinishReason:    finishReason,
 			RawFinishReason: incompleteReason,
 			TotalUsage:      usage,
 		})

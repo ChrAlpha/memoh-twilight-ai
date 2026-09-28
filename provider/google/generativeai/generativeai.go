@@ -622,6 +622,10 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 			lastThoughtSig     string
 			lastTextSig        string
 			streamModel        string
+			// done is set by a candidate's finishReason, or by a blockReason
+			// when the prompt is blocked and no candidates are returned
+			// (https://ai.google.dev/api/generate-content#PromptFeedback).
+			done bool
 		)
 
 		send := func(part sdk.StreamPart) bool {
@@ -680,8 +684,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		}, func(ev *utils.SSEEvent) error {
 			var chunk generateResponse
 			if err := json.Unmarshal([]byte(ev.Data), &chunk); err != nil {
-				send(&sdk.ErrorPart{Error: fmt.Errorf("google: unmarshal chunk: %w", err)})
-				return err
+				return fmt.Errorf("unmarshal chunk: %w", err)
 			}
 
 			if chunk.ModelVersion != "" {
@@ -691,6 +694,9 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 				usage = convertUsage(chunk.UsageMetadata)
 			}
 
+			if chunk.PromptFeedback != nil && chunk.PromptFeedback.BlockReason != "" {
+				done = true
+			}
 			if len(chunk.Candidates) == 0 {
 				return nil
 			}
@@ -787,6 +793,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 			if candidate.FinishReason != "" {
 				rawFinishReason = candidate.FinishReason
 				finishReason = mapFinishReason(rawFinishReason, hasToolCalls)
+				done = true
 
 				flush()
 
@@ -801,14 +808,19 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 			return nil
 		})
 
+		if err == nil && !done {
+			err = sdk.ErrStreamIncomplete
+		}
+		finish := finishReason
 		if err != nil {
 			send(&sdk.ErrorPart{Error: fmt.Errorf("google: stream failed: %w", err)})
+			finish = sdk.FinishReasonError
 		}
 
 		flush()
 
 		send(&sdk.FinishPart{
-			FinishReason:    finishReason,
+			FinishReason:    finish,
 			RawFinishReason: rawFinishReason,
 			TotalUsage:      usage,
 		})

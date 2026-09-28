@@ -69,6 +69,12 @@ func textFixture(t *testing.T) providertest.Fixture {
 				`{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o-mini","choices":[],`+conformanceUsage+`}`,
 			)
 		},
+		// A stream that closes before any choice reports a finish_reason and
+		// without [DONE].
+		ReplyStreamIncomplete: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: " + `{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","content":"conformance"}}]}` + "\n\n"))
+		},
 		ReplyError: func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("x-request-id", conformanceRequestID)

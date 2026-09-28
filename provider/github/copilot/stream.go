@@ -23,6 +23,9 @@ type streamProcessor struct {
 	chunkCreated     int64
 	flushed          bool
 	pendingToolCalls map[int]*streamingToolCall
+	// done is set by the chunk that carries a finish_reason or by the [DONE]
+	// sentinel that follows it; either one means the response is complete.
+	done bool
 }
 
 func (sp *streamProcessor) send(part sdk.StreamPart) bool {
@@ -197,6 +200,7 @@ func (sp *streamProcessor) processFinishReason(choice *chatChunkChoice) {
 	}
 	sp.rawFinishReason = *choice.FinishReason
 	sp.finishReason = mapFinishReason(sp.rawFinishReason)
+	sp.done = true
 
 	sp.flush()
 

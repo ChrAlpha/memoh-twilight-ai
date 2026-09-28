@@ -85,6 +85,57 @@ func TestDecodeOpenAI(t *testing.T) {
 	})
 }
 
+// The "error" event's top-level fields follow openai-go's ResponseErrorEvent:
+// https://github.com/openai/openai-go/blob/d7fd0c65cc247957d5b247ad42283fc8e4061868/responses/response.go
+// The nested shape is the one the Codex CLI reads:
+// https://github.com/openai/codex/blob/1b1835f751ebdc0cfc50b3fe55d4571dbb294563/codex-rs/codex-api/src/sse/responses.rs
+func TestDecodeOpenAIErrorEvent(t *testing.T) {
+	providertest.RunErrorCases(t, "openai-responses", errorformat.DecodeOpenAIErrorEvent, []providertest.ErrorCase{
+		{
+			Name:   "top-level code and message",
+			Header: reqID("x-request-id", "req_ev"),
+			Body:   `{"type":"error","code":"server_error","message":"The server had an error while processing your request.","param":null,"sequence_number":7}`,
+			Want: sdk.APIError{
+				Code: "server_error", Message: "The server had an error while processing your request.",
+				RequestID: "req_ev", Kind: sdk.KindServerError,
+			},
+		},
+		{
+			Name: "nested error object",
+			Body: `{"type":"error","sequence_number":2,"error":{"type":"invalid_request_error","code":"rate_limit_exceeded","message":"Rate limit reached"}}`,
+			Want: sdk.APIError{Type: "invalid_request_error", Code: "rate_limit_exceeded", Message: "Rate limit reached", Kind: sdk.KindRateLimited},
+		},
+		{
+			Name: "unknown code",
+			Body: `{"type":"error","code":"made_up","message":"boom"}`,
+			Want: sdk.APIError{Code: "made_up", Message: "boom", Kind: sdk.KindUnknown},
+		},
+		{
+			Name: "not json",
+			Body: `not json`,
+			Want: sdk.APIError{Kind: sdk.KindUnknown},
+		},
+	})
+}
+
+// The body is verbatim from the Codex CLI's response.failed fixture:
+// https://github.com/openai/codex/blob/1b1835f751ebdc0cfc50b3fe55d4571dbb294563/codex-rs/codex-api/src/sse/responses.rs
+func TestDecodeOpenAIFailedEvent(t *testing.T) {
+	const message = "Rate limit reached for gpt-5.1 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."
+	providertest.RunErrorCases(t, "openai-responses", errorformat.DecodeOpenAIFailedEvent, []providertest.ErrorCase{
+		{
+			Name: "rate limit",
+			Body: `{"type":"response.failed","sequence_number":3,"response":{"id":"resp_689bcf18d7f08194bf3440ba62fe05d803fee0cdac429894","object":"response","created_at":1755041560,"status":"failed","background":false,"error":{"code":"rate_limit_exceeded","message":"` + message + `"}, "usage":null,"user":null,"metadata":{}}}`,
+			Want: sdk.APIError{Code: "rate_limit_exceeded", Message: message, Kind: sdk.KindRateLimited},
+		},
+		{
+			Name: "no error object",
+			Body: `{"type":"response.failed","response":{"status":"failed"}}`,
+			Want: sdk.APIError{Kind: sdk.KindUnknown},
+		},
+	})
+}
+
 // Canonical statuses: https://cloud.google.com/apis/design/errors. ErrorInfo
 // reasons: https://github.com/googleapis/googleapis/blob/563e22e733b315aca418482f644c878997f328ea/google/api/error_reason.proto
 // The RESOURCE_EXHAUSTED body is the design guide's example, verbatim; the
@@ -191,6 +242,12 @@ func TestDecodeDashScope(t *testing.T) {
 		{Name: "unknown code falls back to status", Status: 500,
 			Body: `{"request_id":"r4","code":"InternalError","message":"boom"}`,
 			Want: sdk.APIError{Code: "InternalError", Message: "boom", RequestID: "r4", Kind: sdk.KindServerError}},
+		{Name: "failed task in a 2xx body",
+			Body: `{"request_id":"r5","output":{"task_id":"t1","task_status":"FAILED","code":"DataInspectionFailed","message":"Input data may contain inappropriate content."}}`,
+			Want: sdk.APIError{Code: "DataInspectionFailed", Message: "Input data may contain inappropriate content.", RequestID: "r5", Kind: sdk.KindUnknown}},
+		{Name: "business code in a 2xx body",
+			Body: `{"request_id":"r6","code":"Arrearage","message":"Access denied, please make sure your account is in good standing."}`,
+			Want: sdk.APIError{Code: "Arrearage", Message: "Access denied, please make sure your account is in good standing.", RequestID: "r6", Kind: sdk.KindQuotaExhausted}},
 		{Name: "non-JSON body keeps the status kind", Status: 503,
 			Body: "upstream unavailable",
 			Want: sdk.APIError{Kind: sdk.KindServerError}},
