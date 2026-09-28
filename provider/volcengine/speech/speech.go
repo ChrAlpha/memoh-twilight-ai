@@ -14,7 +14,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -194,8 +193,7 @@ func (p *Provider) synthesize(ctx context.Context, text string, cfg audioConfig)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("volcengine speech: unexpected status %d: %s", resp.StatusCode, string(b))
+		return nil, fmt.Errorf("volcengine speech: %w", sdk.NewAPIErrorFromResponse(resp))
 	}
 
 	// The Go JSON unmarshaler automatically base64-decodes []byte fields.
@@ -204,7 +202,7 @@ func (p *Provider) synthesize(ctx context.Context, text string, cfg audioConfig)
 		return nil, fmt.Errorf("volcengine speech: decode response: %w", err)
 	}
 	if result.StatusCode != 0 && result.StatusCode != 20000000 {
-		return nil, fmt.Errorf("volcengine speech: api error %d: %s", result.StatusCode, result.StatusText)
+		return nil, fmt.Errorf("volcengine speech: request failed (code %d): %s", result.StatusCode, result.StatusText)
 	}
 	if len(result.Data) == 0 {
 		return nil, fmt.Errorf("volcengine speech: empty audio in response")

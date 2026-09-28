@@ -11,7 +11,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -169,8 +168,7 @@ func (p *Provider) synthesize(ctx context.Context, text string, cfg *audioConfig
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("minimax speech: unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("minimax speech: %w", sdk.NewAPIErrorFromResponse(resp))
 	}
 
 	var result t2aResponse
@@ -178,7 +176,7 @@ func (p *Provider) synthesize(ctx context.Context, text string, cfg *audioConfig
 		return nil, fmt.Errorf("minimax speech: decode response: %w", err)
 	}
 	if result.BaseResp.StatusCode != 0 {
-		return nil, fmt.Errorf("minimax speech: api error %d: %s",
+		return nil, fmt.Errorf("minimax speech: request failed (code %d): %s",
 			result.BaseResp.StatusCode, result.BaseResp.StatusMsg)
 	}
 	if result.Data.Audio == "" {

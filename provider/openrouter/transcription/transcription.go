@@ -61,8 +61,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.TranscriptionModel, e
 	}
 	defer httpResp.Body.Close()
 	if httpResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(httpResp.Body)
-		return nil, fmt.Errorf("openrouter transcription: unexpected status %d: %s", httpResp.StatusCode, string(body))
+		return nil, fmt.Errorf("openrouter transcription: %w", sdk.NewAPIErrorFromResponse(httpResp))
 	}
 	rawModels, err := decodeOpenRouterModels(httpResp.Body)
 	if err != nil {
@@ -182,8 +181,7 @@ func (p *Provider) DoTranscribe(ctx context.Context, params sdk.TranscriptionPar
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openrouter transcription: unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("openrouter transcription: %w", sdk.NewAPIErrorFromResponse(resp))
 	}
 
 	var payload struct {
