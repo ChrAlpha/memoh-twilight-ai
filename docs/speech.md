@@ -86,6 +86,11 @@ for chunk := range sr.Stream {
     // Write each chunk to an audio player, file, or HTTP response
     writer.Write(chunk)
 }
+if err := sr.Err(); err != nil {
+    // The stream ended early. A provider failure is an *sdk.APIError;
+    // a failure frame on a WebSocket stream has StatusCode 0.
+    log.Fatal(err)
+}
 ```
 
 Or use the convenience method to collect all audio:
@@ -463,6 +468,9 @@ func handleTTS(w http.ResponseWriter, r *http.Request) {
         if f, ok := w.(http.Flusher); ok {
             f.Flush()
         }
+    }
+    if err := sr.Err(); err != nil {
+        log.Printf("tts stream: %v", err)
     }
 }
 ```

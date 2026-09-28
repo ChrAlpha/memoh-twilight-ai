@@ -14,9 +14,9 @@ import (
 	"net/http"
 	"strings"
 
-	sdk "github.com/felinics/twilight/sdk"
-
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
+	sdk "github.com/felinics/twilight/sdk"
 )
 
 const (
@@ -25,6 +25,9 @@ const (
 	defaultVoice     = "coral"
 	defaultFormat    = "mp3"
 	contentTypeAudio = "audio/mpeg"
+
+	// providerName identifies this package in APIError.Provider.
+	providerName = "openai-speech"
 )
 
 // Option configures the OpenAI TTS provider.
@@ -96,8 +99,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.SpeechModel, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openai speech: unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("openai speech: list models: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeOpenAI))
 	}
 
 	rawModels, err := decodeModelIDs(resp.Body)
@@ -236,9 +238,8 @@ func (p *Provider) doRequest(ctx context.Context, model, text string, cfg audioC
 		return nil, fmt.Errorf("openai speech: request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("openai speech: unexpected status %d: %s", resp.StatusCode, string(body))
+		defer resp.Body.Close()
+		return nil, fmt.Errorf("openai speech: synthesize: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeOpenAI))
 	}
 	return resp.Body, nil
 }

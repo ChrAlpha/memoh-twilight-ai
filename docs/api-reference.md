@@ -902,6 +902,7 @@ type SpeechStreamResult struct {
     ContentType string
 }
 
+func (r *SpeechStreamResult) Err() error
 func (r *SpeechStreamResult) Bytes() ([]byte, error)
 ```
 
@@ -909,7 +910,8 @@ func (r *SpeechStreamResult) Bytes() ([]byte, error)
 |-------|-------------|
 | `Stream` | Channel that yields raw audio chunks; closed when done |
 | `ContentType` | MIME type (e.g. `audio/mpeg`) |
-| `Bytes()` | Consumes the stream and returns concatenated audio data |
+| `Err()` | Error that ended the stream, or nil if it ended normally; call after `Stream` is closed |
+| `Bytes()` | Consumes the stream and returns concatenated audio data and `Err()` |
 
 #### Speech Options
 

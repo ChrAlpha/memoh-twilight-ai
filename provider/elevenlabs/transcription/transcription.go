@@ -12,9 +12,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
 	sdk "github.com/felinics/twilight/sdk"
 )
+
+// providerName identifies this package in APIError.Provider.
+const providerName = "elevenlabs-transcription"
 
 const (
 	defaultModelID = "scribe_v2"
@@ -63,8 +67,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.TranscriptionModel, e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("elevenlabs transcription: unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("elevenlabs transcription: list models: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeElevenLabs))
 	}
 
 	rawModels, err := decodeTranscriptionModelsResponse(resp.Body)
@@ -169,8 +172,7 @@ func (p *Provider) DoTranscribe(ctx context.Context, params sdk.TranscriptionPar
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("elevenlabs transcription: unexpected status %d: %s", resp.StatusCode, string(b))
+		return nil, fmt.Errorf("elevenlabs transcription: transcribe: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeElevenLabs))
 	}
 
 	var payload struct {

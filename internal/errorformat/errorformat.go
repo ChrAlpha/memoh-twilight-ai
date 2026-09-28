@@ -365,3 +365,94 @@ func DashScopeKind(code string) sdk.ErrorKind {
 		return sdk.KindUnknown
 	}
 }
+
+// DecodeDeepgram fills e from a Deepgram error body, documented at
+// https://developers.deepgram.com/docs/errors. Most endpoints send
+// {"err_code":"...","err_msg":"...","request_id":"..."}; the 503 example
+// spells the code error_code, and JSON validation failures send
+// {"category":"...","message":"...","details":"...","request_id":"..."}.
+// category becomes Type. The dg-request-id response header carries the same
+// ID, see https://developers.deepgram.com/docs/text-to-speech.
+func DecodeDeepgram(e *sdk.APIError) {
+	var body struct {
+		ErrCode   string `json:"err_code"`
+		ErrorCode string `json:"error_code"`
+		ErrMsg    string `json:"err_msg"`
+		Category  string `json:"category"`
+		Message   string `json:"message"`
+		RequestID string `json:"request_id"`
+	}
+	_ = json.Unmarshal(e.Body, &body)
+	e.Type = body.Category
+	e.Code = cmp.Or(body.ErrCode, body.ErrorCode)
+	e.Message = cmp.Or(body.ErrMsg, body.Message)
+	e.RequestID = cmp.Or(body.RequestID, e.Header.Get("dg-request-id"))
+	if k := DeepgramKind(e.Code); k != sdk.KindUnknown {
+		e.Kind = k
+	}
+}
+
+// DeepgramKind classifies a Deepgram err_code. INSUFFICIENT_PERMISSIONS arrives as
+// 401 as well as 403, so the status alone would misfile it.
+func DeepgramKind(code string) sdk.ErrorKind {
+	switch code {
+	case "INVALID_AUTH":
+		return sdk.KindAuthentication
+	case "INSUFFICIENT_PERMISSIONS":
+		return sdk.KindPermissionDenied
+	case "ASR_PAYMENT_REQUIRED":
+		return sdk.KindQuotaExhausted
+	case "TOO_MANY_REQUESTS":
+		return sdk.KindRateLimited
+	default:
+		return sdk.KindUnknown
+	}
+}
+
+// DecodeElevenLabs fills e from an ElevenLabs error body, documented at
+// https://elevenlabs.io/docs/eleven-api/resources/errors:
+// {"detail":{"type":"...","code":"...","message":"...","request_id":"...","param":"..."}}.
+// The request-id response header carries the same ID, see
+// https://elevenlabs.io/docs/eleven-api/guides/how-to/text-to-speech/request-stitching.
+// A body in any other shape keeps the Kind derived from the status.
+func DecodeElevenLabs(e *sdk.APIError) {
+	var body struct {
+		Detail struct {
+			Type      string `json:"type"`
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			RequestID string `json:"request_id"`
+		} `json:"detail"`
+	}
+	_ = json.Unmarshal(e.Body, &body)
+	e.Type = body.Detail.Type
+	e.Code = body.Detail.Code
+	e.Message = body.Detail.Message
+	e.RequestID = cmp.Or(body.Detail.RequestID, e.Header.Get("request-id"))
+	if k := ElevenLabsKind(e.Type, e.Code); k != sdk.KindUnknown {
+		e.Kind = k
+	}
+}
+
+// ElevenLabsKind classifies an ElevenLabs error type and code.
+func ElevenLabsKind(typ, code string) sdk.ErrorKind {
+	switch code {
+	case "insufficient_credits":
+		return sdk.KindQuotaExhausted
+	case "rate_limit_exceeded", "concurrent_limit_exceeded", "system_busy":
+		return sdk.KindRateLimited
+	}
+	switch typ {
+	case "authentication_error":
+		return sdk.KindAuthentication
+	case "authorization_error":
+		return sdk.KindPermissionDenied
+	case "payment_required":
+		return sdk.KindQuotaExhausted
+	case "rate_limit_error":
+		return sdk.KindRateLimited
+	case "internal_error", "service_unavailable":
+		return sdk.KindServerError
+	}
+	return sdk.KindUnknown
+}

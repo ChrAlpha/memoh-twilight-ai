@@ -50,3 +50,38 @@ func TestHTTPErrorIsAPIError(t *testing.T) {
 		})
 	}
 }
+
+// Raw-file edits are sent as multipart/form-data outside utils.FetchJSON, and
+// must surface the same APIError. The body is OpenAI's documented 400 for a
+// request that trips the safety system:
+// https://platform.openai.com/docs/guides/error-codes (mirrored at
+// https://github.com/openai/openai-cookbook/blob/6dc6324fb9ed780b32b787f23fad336e9f1eff15/examples/data/oai_docs/error-codes.txt).
+func TestMultipartEditHTTPErrorIsAPIError(t *testing.T) {
+	const body = `{"error":{"message":"Your request was rejected as a result of our safety system.","type":"invalid_request_error","param":null,"code":"moderation_blocked"}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+			t.Errorf("Content-Type = %q, want multipart", r.Header.Get("Content-Type"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-request-id", "req_edit")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	p := New(WithAPIKey("sk-secret-7f3a"), WithBaseURL(srv.URL))
+	_, err := p.DoEdit(context.Background(), &sdk.ImageEditParams{
+		Model:  p.EditModel("gpt-image-1"),
+		Prompt: "x",
+		Images: []sdk.ImageInput{{Data: []byte("png")}},
+	})
+	apiErr := providertest.WantAPIError(t, err, providerName, http.StatusBadRequest, sdk.KindUnknown)
+	if apiErr.Type != "invalid_request_error" || apiErr.Code != "moderation_blocked" || apiErr.RequestID != "req_edit" {
+		t.Errorf("Type, Code, RequestID = %q, %q, %q", apiErr.Type, apiErr.Code, apiErr.RequestID)
+	}
+	if apiErr.Message != "Your request was rejected as a result of our safety system." {
+		t.Errorf("Message = %q", apiErr.Message)
+	}
+	if text := err.Error(); strings.Contains(text, "sk-secret-7f3a") || strings.Contains(text, body) {
+		t.Errorf("error text %q leaks the key or the body", text)
+	}
+}

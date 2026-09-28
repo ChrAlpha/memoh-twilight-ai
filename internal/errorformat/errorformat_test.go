@@ -424,6 +424,135 @@ func TestDecodeDashScope(t *testing.T) {
 	providertest.RunErrorCases(t, "alibabacloud-images", errorformat.DecodeDashScope, cases)
 }
 
+// Deepgram error bodies are verbatim from
+// https://developers.deepgram.com/docs/errors, with the documented "uuid"
+// placeholder replaced by a sample ID.
+const deepgramInvalidAuthBody = `{"err_code":"INVALID_AUTH","err_msg":"Invalid credentials.","request_id":"9a1c5e7f-0000-4000-8000-000000000401"}`
+
+func TestDecodeDeepgram(t *testing.T) {
+	providertest.RunErrorCases(t, "deepgram-speech", errorformat.DecodeDeepgram, []providertest.ErrorCase{
+		{
+			Name:   "invalid auth",
+			Status: http.StatusUnauthorized,
+			Body:   deepgramInvalidAuthBody,
+			Want: sdk.APIError{
+				Code: "INVALID_AUTH", Message: "Invalid credentials.", RequestID: "9a1c5e7f-0000-4000-8000-000000000401", Kind: sdk.KindAuthentication,
+			},
+		},
+		{
+			// Deepgram sends insufficient permissions as a 401 too.
+			Name:   "insufficient permissions as 401",
+			Status: http.StatusUnauthorized,
+			Body:   `{"err_code":"INSUFFICIENT_PERMISSIONS","err_msg":"User does not have sufficient permissions.","request_id":"r401p"}`,
+			Want: sdk.APIError{
+				Code: "INSUFFICIENT_PERMISSIONS", Message: "User does not have sufficient permissions.", RequestID: "r401p", Kind: sdk.KindPermissionDenied,
+			},
+		},
+		{
+			Name:   "insufficient credits",
+			Status: http.StatusPaymentRequired,
+			Body:   `{"err_code":"ASR_PAYMENT_REQUIRED","err_msg":"Project does not have enough credits for an ASR request and does not have an overage agreement.","request_id":"r402"}`,
+			Want: sdk.APIError{
+				Code: "ASR_PAYMENT_REQUIRED", Message: "Project does not have enough credits for an ASR request and does not have an overage agreement.", RequestID: "r402", Kind: sdk.KindQuotaExhausted,
+			},
+		},
+		{
+			Name:   "text to speech rate limit",
+			Status: http.StatusTooManyRequests,
+			Body:   `{"err_code":"Too Many Requests","err_msg":"Please try again later.","request_id":"r429"}`,
+			Want: sdk.APIError{
+				Code: "Too Many Requests", Message: "Please try again later.", RequestID: "r429", Kind: sdk.KindRateLimited,
+			},
+		},
+		{
+			Name:   "service unavailable spells the code error_code",
+			Status: http.StatusServiceUnavailable,
+			Body:   `{"error_code":"Service Unavailable","err_msg":"Please try again later","request_id":"r503"}`,
+			Want: sdk.APIError{
+				Code: "Service Unavailable", Message: "Please try again later", RequestID: "r503", Kind: sdk.KindServerError,
+			},
+		},
+		{
+			Name:   "invalid JSON",
+			Status: http.StatusBadRequest,
+			Body:   "{\"category\":\"INVALID_JSON\",\"message\":\"Invalid JSON submitted.\",\"details\":\"Json deserialize error: missing field `xxx` at line 7 column 1\",\"request_id\":\"r400\"}",
+			Want: sdk.APIError{
+				Type: "INVALID_JSON", Message: "Invalid JSON submitted.", RequestID: "r400", Kind: sdk.KindUnknown,
+			},
+		},
+		{
+			Name:   "dg-request-id header without a JSON body",
+			Status: http.StatusBadGateway,
+			Header: http.Header{"Dg-Request-Id": {"hdr_502"}},
+			Body:   "bad gateway",
+			Want:   sdk.APIError{RequestID: "hdr_502", Kind: sdk.KindServerError},
+		},
+	})
+}
+
+// ElevenLabs error bodies follow
+// https://elevenlabs.io/docs/eleven-api/resources/errors. The validation body
+// is the page's example verbatim; the others fill the documented fields with
+// rows of its error-code table.
+const (
+	elevenLabsValidationBody = `{"detail":{"type":"validation_error","code":"invalid_parameters","message":"The 'keyterms' parameter is only supported with the 'scribe_v2' model. You specified 'scribe_v1'.","status":"invalid_parameters","request_id":"3c807fc4c3a1705f9638ecc764a91c01","param":"keyterms"}}`
+	elevenLabsCreditsBody    = `{"detail":{"type":"payment_required","code":"insufficient_credits","message":"Your account does not have enough credits for this operation.","status":"insufficient_credits","request_id":"req_402"}}`
+)
+
+func TestDecodeElevenLabs(t *testing.T) {
+	providertest.RunErrorCases(t, "elevenlabs-speech", errorformat.DecodeElevenLabs, []providertest.ErrorCase{
+		{
+			Name:   "validation error",
+			Status: http.StatusBadRequest,
+			Body:   elevenLabsValidationBody,
+			Want: sdk.APIError{
+				Type: "validation_error", Code: "invalid_parameters", RequestID: "3c807fc4c3a1705f9638ecc764a91c01", Kind: sdk.KindUnknown,
+				Message: "The 'keyterms' parameter is only supported with the 'scribe_v2' model. You specified 'scribe_v1'.",
+			},
+		},
+		{
+			Name:   "invalid api key",
+			Status: http.StatusUnauthorized,
+			Body:   `{"detail":{"type":"authentication_error","code":"invalid_api_key","message":"The provided API key is invalid.","status":"invalid_api_key","request_id":"req_401"}}`,
+			Want: sdk.APIError{
+				Type: "authentication_error", Code: "invalid_api_key", Message: "The provided API key is invalid.", RequestID: "req_401", Kind: sdk.KindAuthentication,
+			},
+		},
+		{
+			Name:   "insufficient credits",
+			Status: http.StatusPaymentRequired,
+			Body:   elevenLabsCreditsBody,
+			Want: sdk.APIError{
+				Type: "payment_required", Code: "insufficient_credits", Message: "Your account does not have enough credits for this operation.", RequestID: "req_402", Kind: sdk.KindQuotaExhausted,
+			},
+		},
+		{
+			// The feature gate is an authorization_error, not a quota.
+			Name:   "subscription required",
+			Status: http.StatusForbidden,
+			Body:   `{"detail":{"type":"authorization_error","code":"subscription_required","message":"A paid subscription is required to access this feature.","status":"subscription_required","request_id":"req_403"}}`,
+			Want: sdk.APIError{
+				Type: "authorization_error", Code: "subscription_required", Message: "A paid subscription is required to access this feature.", RequestID: "req_403", Kind: sdk.KindPermissionDenied,
+			},
+		},
+		{
+			Name:   "concurrency limit",
+			Status: http.StatusTooManyRequests,
+			Body:   `{"detail":{"type":"rate_limit_error","code":"concurrent_limit_exceeded","message":"Maximum number of concurrent requests exceeded.","status":"concurrent_limit_exceeded","request_id":"req_429"}}`,
+			Want: sdk.APIError{
+				Type: "rate_limit_error", Code: "concurrent_limit_exceeded", Message: "Maximum number of concurrent requests exceeded.", RequestID: "req_429", Kind: sdk.KindRateLimited,
+			},
+		},
+		{
+			Name:   "request-id header without a JSON body",
+			Status: http.StatusServiceUnavailable,
+			Header: http.Header{"Request-Id": {"hdr_503"}},
+			Body:   "upstream unavailable",
+			Want:   sdk.APIError{RequestID: "hdr_503", Kind: sdk.KindServerError},
+		},
+	})
+}
+
 func TestKindWithoutStatus(t *testing.T) {
 	// Stream events carry no status; the type or code alone must classify.
 	if got := errorformat.OpenAIKind("", "insufficient_quota"); got != sdk.KindQuotaExhausted {

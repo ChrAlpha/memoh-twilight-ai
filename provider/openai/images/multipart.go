@@ -5,11 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"strconv"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
 	"github.com/felinics/twilight/sdk"
 )
@@ -41,8 +41,7 @@ func (p *Provider) doEditMultipart(ctx context.Context, params *sdk.ImageEditPar
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openai images: edit request failed with status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("openai images: edit request failed: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeOpenAI))
 	}
 
 	var result imagesResponse

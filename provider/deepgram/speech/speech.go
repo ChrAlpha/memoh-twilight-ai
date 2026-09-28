@@ -13,9 +13,13 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
 	sdk "github.com/felinics/twilight/sdk"
 )
+
+// providerName identifies this package in APIError.Provider.
+const providerName = "deepgram-speech"
 
 const (
 	// defaultModelID is the SDK-level model identifier exposed via SpeechModel.
@@ -113,8 +117,7 @@ func (p *Provider) listModels(ctx context.Context) (*deepgramModelsResponse, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("deepgram speech: unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("deepgram speech: list models: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeDeepgram))
 	}
 
 	var payload deepgramModelsResponse
@@ -199,9 +202,8 @@ func (p *Provider) doRequest(ctx context.Context, text string, cfg audioConfig) 
 		return nil, fmt.Errorf("deepgram speech: request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("deepgram speech: unexpected status %d: %s", resp.StatusCode, string(respBody))
+		defer resp.Body.Close()
+		return nil, fmt.Errorf("deepgram speech: synthesize: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeDeepgram))
 	}
 	return resp.Body, nil
 }
