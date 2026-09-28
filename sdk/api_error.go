@@ -58,9 +58,10 @@ type APIError struct {
 	// when there was no HTTP response.
 	Header http.Header
 
-	// Body is the raw response body, event payload or frame, as received. It
-	// may echo parts of the request, including end-user input, so do not log
-	// it verbatim. It is never part of Error.
+	// Body is the raw response body, event payload or frame, as received. A
+	// non-2xx body is cut at 1 MiB. It may echo parts of the request,
+	// including end-user input, so do not log it verbatim. It is never part
+	// of Error.
 	Body []byte
 }
 

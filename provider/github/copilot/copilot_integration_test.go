@@ -4,8 +4,9 @@ package copilot_test
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/felinics/twilight/internal/testutil"
@@ -49,16 +50,13 @@ func integrationModelID() string {
 }
 
 func isModelUnsupported(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "model_not_supported")
+	var apiErr *sdk.APIError
+	return errors.As(err, &apiErr) && apiErr.Code == "model_not_supported"
 }
 
 func isEndpointForbidden(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "403 Forbidden") ||
-		strings.Contains(msg, "Access to this endpoint is forbidden")
+	var apiErr *sdk.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden
 }
 
 func TestIntegration_ListModels(t *testing.T) {

@@ -3,8 +3,10 @@ package utils
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/felinics/twilight/sdk"
@@ -124,5 +126,21 @@ func TestNewHTTPErrorWithoutDecoder(t *testing.T) {
 	}
 	if got.Message != "" || got.Code != "" {
 		t.Fatalf("no decoder must leave provider fields empty, got %+v", got)
+	}
+}
+
+func TestNewHTTPErrorBoundsBody(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rec.WriteHeader(http.StatusBadGateway)
+	_, _ = rec.WriteString(strings.Repeat("x", maxErrorBodyBytes+maxErrorDrainBytes+1))
+	resp := rec.Result()
+	got := NewHTTPError("p", resp, nil)
+	if len(got.Body) != maxErrorBodyBytes {
+		t.Fatalf("len(Body) = %d, want %d", len(got.Body), maxErrorBodyBytes)
+	}
+	// The drain stops at maxErrorDrainBytes and leaves the rest unread.
+	rest, _ := io.ReadAll(resp.Body)
+	if len(rest) != 1 {
+		t.Fatalf("unread remainder = %d bytes, want 1", len(rest))
 	}
 }

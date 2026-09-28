@@ -13,12 +13,23 @@ import (
 // from the HTTP status in place. Each provider package supplies one.
 type ErrorDecoder func(e *sdk.APIError)
 
-// NewHTTPError reads resp.Body and builds the APIError for a non-2xx
+// maxErrorBodyBytes bounds how much of a non-2xx body NewHTTPError reads, so
+// a misbehaving upstream cannot make an error value hold an unbounded buffer.
+// Provider error bodies are a few hundred bytes.
+const maxErrorBodyBytes = 1 << 20
+
+// maxErrorDrainBytes bounds how much of the remainder NewHTTPError discards
+// to keep the connection reusable. A longer remainder is abandoned and the
+// connection closed with resp.Body.
+const maxErrorDrainBytes = 64 << 10
+
+// NewHTTPError reads at most maxErrorBodyBytes of resp.Body and builds the APIError for a non-2xx
 // response. The caller still closes resp.Body. Kind starts from the HTTP
 // status and decode, when non-nil, refines it from the provider's own type or
 // code.
 func NewHTTPError(provider string, resp *http.Response, decode ErrorDecoder) *sdk.APIError {
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorDrainBytes))
 	e := &sdk.APIError{
 		Provider:   provider,
 		StatusCode: resp.StatusCode,
