@@ -107,6 +107,10 @@ func TestChatProviderHeaders(t *testing.T) {
 						if operation == "stream" && h.Get("Accept") != "text/event-stream" {
 							t.Errorf("stream Accept = %q", h.Get("Accept"))
 						}
+						// A caller's Accept must not change the format the provider decodes.
+						if accept := h.Get("Accept"); (operation == "generate" || operation == "list") && accept != "application/json" && accept != "text/event-stream" {
+							t.Errorf("%s Accept = %q", operation, accept)
+						}
 						if (operation == "generate" || operation == "stream") && h.Get("Content-Type") != "application/json" {
 							t.Errorf("%s Content-Type = %q", operation, h.Get("Content-Type"))
 						}

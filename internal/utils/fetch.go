@@ -51,9 +51,7 @@ func BuildRequest(ctx context.Context, opts *RequestOptions) (*http.Request, err
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	for k, v := range opts.Headers {
-		req.Header.Set(k, v)
-	}
+	SetHeaders(req, opts.Headers)
 
 	// The body is always JSON-encoded above, so custom headers must not relabel it.
 	if opts.Body != nil {
@@ -75,9 +73,9 @@ func FetchJSON[T any](ctx context.Context, client *http.Client, opts *RequestOpt
 	if opts.Headers == nil {
 		opts.Headers = make(map[string]string)
 	}
-	if _, ok := opts.Headers["Accept"]; !ok {
-		opts.Headers["Accept"] = "application/json"
-	}
+	// The response is always decoded as JSON, so custom headers must not
+	// negotiate another format.
+	opts.Headers["Accept"] = "application/json"
 
 	req, err := BuildRequest(ctx, opts)
 	if err != nil {

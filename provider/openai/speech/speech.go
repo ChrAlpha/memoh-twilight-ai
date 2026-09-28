@@ -88,9 +88,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.SpeechModel, error) {
 	if err != nil {
 		return nil, fmt.Errorf("openai speech: build list models request: %w", err)
 	}
-	for key, value := range p.requestHeaders(ctx) {
-		req.Header.Set(key, value)
-	}
+	utils.SetHeaders(req, p.requestHeaders(ctx))
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -229,9 +227,7 @@ func (p *Provider) doRequest(ctx context.Context, model, text string, cfg audioC
 	if err != nil {
 		return nil, fmt.Errorf("openai speech: build request: %w", err)
 	}
-	for key, value := range p.requestHeaders(ctx) {
-		req.Header.Set(key, value)
-	}
+	utils.SetHeaders(req, p.requestHeaders(ctx))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := p.httpClient.Do(req)

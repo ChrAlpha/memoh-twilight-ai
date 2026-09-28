@@ -30,9 +30,7 @@ func (p *Provider) doEditMultipart(ctx context.Context, params *sdk.ImageEditPar
 	if err != nil {
 		return nil, fmt.Errorf("openai images: create request: %w", err)
 	}
-	for key, value := range p.requestHeaders(ctx) {
-		req.Header.Set(key, value)
-	}
+	utils.SetHeaders(req, p.requestHeaders(ctx))
 	req.Header.Set("Content-Type", contentType)
 
 	resp, err := p.httpClient.Do(req)

@@ -1,5 +1,5 @@
-// Package opencodego provides OpenCode Go using its documented per-model
-// Completions, Responses and Anthropic Messages endpoints.
+// Package opencodego provides OpenCode Go through its Completions endpoint,
+// and through Responses or Anthropic Messages for the models documented there.
 package opencodego
 
 import (
@@ -35,7 +35,6 @@ type Provider struct {
 	httpClient     *http.Client
 	headers        map[string]string
 	modelProtocols map[string]Protocol
-	displayNames   map[string]string
 	delegates      map[Protocol]sdk.Provider
 }
 
@@ -63,9 +62,9 @@ func WithHeaders(headers map[string]string) Option {
 	return func(p *Provider) { p.headers = headers }
 }
 
-// WithModelProtocols adds or overrides explicit model routes. The map is copied
-// when this option is created. Unknown models and invalid protocols produce an
-// error before generation; there is no prefix-based or default-protocol guess.
+// WithModelProtocols adds or overrides per-model routes; models without one use
+// Completions. The map is copied when this option is created. An invalid
+// protocol produces an error before generation.
 func WithModelProtocols(protocols map[string]Protocol) Option {
 	protocols = maps.Clone(protocols)
 	return func(p *Provider) { maps.Copy(p.modelProtocols, protocols) }
@@ -75,12 +74,7 @@ func New(options ...Option) *Provider {
 	p := &Provider{
 		baseURL:        defaultBaseURL,
 		httpClient:     &http.Client{},
-		modelProtocols: make(map[string]Protocol),
-		displayNames:   make(map[string]string),
-	}
-	for _, model := range Catalog() {
-		p.modelProtocols[model.ID] = model.Protocol
-		p.displayNames[model.ID] = model.DisplayName
+		modelProtocols: maps.Clone(protocolExceptions),
 	}
 	for _, option := range options {
 		option(p)
@@ -105,7 +99,7 @@ func New(options ...Option) *Provider {
 func (p *Provider) Name() string { return "opencode-go" }
 
 func (p *Provider) ChatModel(id string) *sdk.Model {
-	return &sdk.Model{ID: id, DisplayName: p.displayNames[id], Provider: p, Type: sdk.ModelTypeChat}
+	return &sdk.Model{ID: id, Provider: p, Type: sdk.ModelTypeChat}
 }
 
 // ProtocolForModel exposes the same routing decision used by generation and
@@ -113,7 +107,7 @@ func (p *Provider) ChatModel(id string) *sdk.Model {
 func (p *Provider) ProtocolForModel(id string) (Protocol, error) {
 	protocol, ok := p.modelProtocols[id]
 	if !ok {
-		return "", fmt.Errorf("opencode-go: no protocol registered for model %q; use WithModelProtocols", id)
+		return ProtocolCompletions, nil
 	}
 	switch protocol {
 	case ProtocolCompletions, ProtocolResponses, ProtocolMessages:
@@ -123,26 +117,16 @@ func (p *Provider) ProtocolForModel(id string) (Protocol, error) {
 	}
 }
 
-// ListModels queries the live endpoint. It also returns newly published models
-// whose protocol is not yet known locally. Check ProtocolForModel before using
-// those models and register a documented route with WithModelProtocols.
+// ListModels queries the live endpoint, which carries no protocol metadata.
+// Newly published models are routed to Completions unless registered with
+// WithModelProtocols.
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
-	result, err := utils.FetchJSON[struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Headers: p.requestHeaders(ctx),
-	})
+	models, err := p.delegates[ProtocolCompletions].ListModels(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("opencode-go: list models: %w", err)
 	}
-	models := make([]sdk.Model, 0, len(result.Data))
-	for _, model := range result.Data {
-		models = append(models, *p.ChatModel(model.ID))
+	for i := range models {
+		models[i].Provider = p
 	}
 	return models, nil
 }
@@ -185,30 +169,22 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 	if req.Model == "" {
 		return sdk.ModelResult{}, fmt.Errorf("opencode-go: model is required")
 	}
-	delegate, err := p.providerForModel(req.Model)
+	protocol, err := p.ProtocolForModel(req.Model)
 	if err != nil {
 		return sdk.ModelResult{}, err
 	}
-	return delegate.DoGenerate(ctx, p.requestForModel(delegate, req))
+	return p.delegates[protocol].DoGenerate(ctx, p.requestForModel(protocol, req))
 }
 
 func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error) { //nolint:gocritic // interface method
 	if req.Model == "" {
 		return nil, fmt.Errorf("opencode-go: model is required")
 	}
-	delegate, err := p.providerForModel(req.Model)
+	protocol, err := p.ProtocolForModel(req.Model)
 	if err != nil {
 		return nil, err
 	}
-	return delegate.DoStream(ctx, p.requestForModel(delegate, req))
-}
-
-func (p *Provider) providerForModel(id string) (sdk.Provider, error) {
-	protocol, err := p.ProtocolForModel(id)
-	if err != nil {
-		return nil, err
-	}
-	return p.delegates[protocol], nil
+	return p.delegates[protocol].DoStream(ctx, p.requestForModel(protocol, req))
 }
 
 // requestForModel hands the caller's "opencode-go" provider options to the
@@ -226,13 +202,13 @@ func (p *Provider) providerForModel(id string) (sdk.Provider, error) {
 //     routes reject the request otherwise, which happens when persisted history
 //     dropped the reasoning or the model emitted none; an empty value is
 //     accepted by every route.
-func (p *Provider) requestForModel(delegate sdk.Provider, req sdk.Request) sdk.Request { //nolint:gocritic // mirrors interface methods
+func (p *Provider) requestForModel(protocol Protocol, req sdk.Request) sdk.Request { //nolint:gocritic // mirrors interface methods
 	options := req.ProviderOptions[p.Name()]
 	req.ProviderOptions = nil
 	if len(options) > 0 {
-		req.ProviderOptions = map[string]json.RawMessage{delegate.Name(): options}
+		req.ProviderOptions = map[string]json.RawMessage{p.delegates[protocol].Name(): options}
 	}
-	if p.modelProtocols[req.Model] != ProtocolCompletions {
+	if protocol != ProtocolCompletions {
 		return req
 	}
 	converted := slices.Clone(req.Messages)
@@ -266,14 +242,4 @@ func padToolCallReasoning(parts []sdk.MessagePart) []sdk.MessagePart {
 		return parts
 	}
 	return append(slices.Clone(parts), sdk.ReasoningPart{Format: sdk.ReasoningFormatOpenAIChat})
-}
-
-// requestHeaders omits Authorization when no key is configured, so the public
-// models endpoint is not sent an empty bearer token.
-func (p *Provider) requestHeaders(ctx context.Context) map[string]string {
-	var defaults map[string]string
-	if p.apiKey != "" {
-		defaults = utils.AuthHeader(p.apiKey)
-	}
-	return utils.RequestHeaders(ctx, defaults, p.headers)
 }

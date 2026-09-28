@@ -13,10 +13,11 @@ import (
 // Transport-required headers (SSE, JSON and multipart content types) and
 // signing are applied last.
 //
-// Use a separate context per conversation for session identifiers. The context
-// can be passed to generation, streaming, model listing and probes, and is
-// preserved through the SDK's tool execution loop. Every provider called with
-// the context receives these headers, so keep credentials in provider options.
+// Use a separate context per conversation for session identifiers, and pass the
+// same context to every call in that conversation, including the calls that
+// answer tool results. The context can be passed to generation, streaming,
+// model listing and probes. Every provider called with the context receives
+// these headers, so keep credentials in provider options.
 //
 // Supported by Anthropic Messages, all OpenAI providers, Google Generative AI,
 // GitHub Copilot and OpenCode Go. Other providers may ignore these headers.

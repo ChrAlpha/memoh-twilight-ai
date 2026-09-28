@@ -101,7 +101,8 @@ if err != nil {
 fmt.Println(result.Text)
 ```
 
-Models route to Completions, Responses or Messages using an explicit catalog.
+Models route to Completions unless the official endpoint table lists them under
+Responses or Messages.
 See [OpenCode Go](docs/providers.md#opencode-go-provider) for model discovery,
 route overrides and session handling.
 

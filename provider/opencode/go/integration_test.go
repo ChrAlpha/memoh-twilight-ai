@@ -3,7 +3,6 @@ package opencodego_test
 import (
 	"context"
 	"os"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,8 +21,9 @@ func TestMain(m *testing.M) {
 // ---------- integration tests (real API, skipped without env) ----------
 //
 // OPENCODE_GO_API_KEY enables them. OPENCODE_GO_MODELS narrows the run to a
-// comma-separated list of model IDs; by default every catalog model is
-// exercised. These requests incur upstream usage charges.
+// comma-separated list of model IDs; by default every model the live /models
+// endpoint lists is exercised, so a new model that needs a route exception
+// shows up as a failure. These requests incur upstream usage charges.
 
 func newIntegrationProvider(t *testing.T) *opencodego.Provider {
 	t.Helper()
@@ -41,18 +41,26 @@ func newIntegrationProvider(t *testing.T) *opencodego.Provider {
 	return opencodego.New(options...)
 }
 
-func integrationModels() []opencodego.ModelDescriptor {
+func integrationModels(t *testing.T, p *opencodego.Provider) []string {
+	t.Helper()
 	var only []string
 	for id := range strings.SplitSeq(os.Getenv("OPENCODE_GO_MODELS"), ",") {
 		if id = strings.TrimSpace(id); id != "" {
 			only = append(only, id)
 		}
 	}
-	models := opencodego.Catalog()
-	if len(only) == 0 {
-		return models
+	if len(only) > 0 {
+		return only
 	}
-	return slices.DeleteFunc(models, func(m opencodego.ModelDescriptor) bool { return !slices.Contains(only, m.ID) })
+	models, err := p.ListModels(integrationContext(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	return ids
 }
 
 func integrationContext(t *testing.T) context.Context {
@@ -71,8 +79,8 @@ func integrationLookupTool() sdk.ToolDefinition {
 	}
 }
 
-// The live catalog must still list every model that has a local route.
-func TestIntegration_CatalogIsLive(t *testing.T) {
+// The live catalog must still list every route exception.
+func TestIntegration_ExceptionsAreLive(t *testing.T) {
 	p := newIntegrationProvider(t)
 	models, err := p.ListModels(integrationContext(t))
 	if err != nil {
@@ -81,13 +89,10 @@ func TestIntegration_CatalogIsLive(t *testing.T) {
 	live := make(map[string]bool, len(models))
 	for _, model := range models {
 		live[model.ID] = true
-		if _, err := p.ProtocolForModel(model.ID); err != nil {
-			t.Logf("live model without a local route: %s", model.ID)
-		}
 	}
-	for _, entry := range opencodego.Catalog() {
-		if !live[entry.ID] {
-			t.Errorf("catalog model %q is no longer listed upstream", entry.ID)
+	for id := range opencodego.ProtocolExceptions {
+		if !live[id] {
+			t.Errorf("route exception %q is no longer listed upstream", id)
 		}
 	}
 }
@@ -96,11 +101,11 @@ func TestIntegration_CatalogIsLive(t *testing.T) {
 // the model chooses to call the tool is its decision; the request must succeed.
 func TestIntegration_StreamToolLoop(t *testing.T) {
 	p := newIntegrationProvider(t)
-	for _, entry := range integrationModels() {
-		t.Run(entry.ID, func(t *testing.T) {
+	for _, id := range integrationModels(t, p) {
+		t.Run(id, func(t *testing.T) {
 			t.Parallel()
 			ctx := integrationContext(t)
-			model := p.ChatModel(entry.ID)
+			model := p.ChatModel(id)
 			messages := []sdk.Message{sdk.UserMessage("Call the lookup tool with key 'color', then reply with only the value it returned.")}
 			var result *sdk.ModelResult
 			steps := 0
@@ -123,7 +128,8 @@ func TestIntegration_StreamToolLoop(t *testing.T) {
 			if strings.TrimSpace(result.Text) == "" {
 				t.Errorf("empty text: %+v", result)
 			}
-			t.Logf("[%s] steps=%d text=%q", entry.Protocol, steps, result.Text)
+			protocol, _ := p.ProtocolForModel(id)
+			t.Logf("[%s] steps=%d text=%q", protocol, steps, result.Text)
 		})
 	}
 }
@@ -143,10 +149,10 @@ func TestIntegration_ReplayWithoutReasoning(t *testing.T) {
 		{Role: sdk.MessageRoleAssistant, Content: []sdk.MessagePart{sdk.ToolCallPart{ToolCallID: "call_1", ToolName: "lookup", Input: input}}},
 		sdk.ToolMessage(sdk.ToolResultPart{ToolCallID: "call_1", ToolName: "lookup", Result: sdk.TextOutput("blue")}),
 	}
-	for _, entry := range integrationModels() {
-		t.Run(entry.ID, func(t *testing.T) {
+	for _, id := range integrationModels(t, p) {
+		t.Run(id, func(t *testing.T) {
 			t.Parallel()
-			result, err := p.ChatModel(entry.ID).Generate(integrationContext(t), sdk.Request{
+			result, err := p.ChatModel(id).Generate(integrationContext(t), sdk.Request{
 				MaxTokens: &maxTokens, ReasoningEffort: &effort,
 				Tools: []sdk.ToolDefinition{integrationLookupTool()}, Messages: history,
 			})
@@ -165,10 +171,10 @@ func TestIntegration_ReplayWithoutReasoning(t *testing.T) {
 func TestIntegration_DeveloperInstruction(t *testing.T) {
 	p := newIntegrationProvider(t)
 	maxTokens := 2048
-	for _, entry := range integrationModels() {
-		t.Run(entry.ID, func(t *testing.T) {
+	for _, id := range integrationModels(t, p) {
+		t.Run(id, func(t *testing.T) {
 			t.Parallel()
-			result, err := p.ChatModel(entry.ID).Generate(integrationContext(t), sdk.Request{
+			result, err := p.ChatModel(id).Generate(integrationContext(t), sdk.Request{
 				MaxTokens: &maxTokens,
 				Messages:  []sdk.Message{sdk.DeveloperMessage("Always answer in uppercase."), sdk.UserMessage("Say: pong")},
 			})

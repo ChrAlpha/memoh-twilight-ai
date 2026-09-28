@@ -64,9 +64,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.TranscriptionModel, e
 	if err != nil {
 		return nil, fmt.Errorf("openai transcription: build list models request: %w", err)
 	}
-	for key, value := range p.requestHeaders(ctx) {
-		req.Header.Set(key, value)
-	}
+	utils.SetHeaders(req, p.requestHeaders(ctx))
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -152,9 +150,7 @@ func (p *Provider) DoTranscribe(ctx context.Context, params sdk.TranscriptionPar
 	if err != nil {
 		return nil, fmt.Errorf("openai transcription: build request: %w", err)
 	}
-	for key, value := range p.requestHeaders(ctx) {
-		req.Header.Set(key, value)
-	}
+	utils.SetHeaders(req, p.requestHeaders(ctx))
 	req.Header.Set("Content-Type", contentType)
 
 	resp, err := p.httpClient.Do(req)

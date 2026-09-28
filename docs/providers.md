@@ -68,7 +68,7 @@ if result.Status != sdk.ProviderStatusOK {
 
 ### Model Discovery
 
-`ListModels(ctx)` returns all models available from the provider. Each returned `Model` is bound to the provider. For providers with explicit model routing, also check that a route is registered:
+`ListModels(ctx)` returns all models available from the provider. Each returned `Model` is bound to the provider.
 
 ```go
 models, err := provider.ListModels(ctx)
@@ -82,7 +82,9 @@ To check a single model without listing all:
 ```go
 model := provider.ChatModel("gpt-4o")
 result, err := model.Test(ctx)
-if result.Supported {
+if err != nil {
+    // the probe itself failed, for example on authentication
+} else if result.Supported {
     // safe to use this model
 }
 ```
@@ -645,10 +647,11 @@ transports may also supply headers. See the [official client requirements](https
 | `ProtocolResponses` | `/responses` | `gpt-5.6-luna` |
 | `ProtocolMessages` | `/messages` | `minimax-m2.7` |
 
-`Catalog()` returns the explicit model/protocol routes from the [official
-endpoint table](https://opencode.ai/docs/go/#endpoints), checked on 2026-09-21,
-plus `deepseek-flash`, which the table omits but the live service lists and
-serves.
+Like OpenCode itself, the provider sends every model to Completions except
+those that the [official endpoint table](https://opencode.ai/docs/go/#endpoints)
+routes to Responses or Messages; the SDK keeps only that exception table,
+checked on 2026-09-28. The model list changes about twice a week and most new
+models use Completions, so a full directory would go stale.
 `provider.ProtocolForModel(id)` exposes the routing decision for applications
 that need protocol-specific reasoning or cache settings. Generic generation
 parameters, tools, reasoning metadata and stream events retain the selected
@@ -679,10 +682,10 @@ reasons. `glm-5.3-flash` rejects a request that sets a reasoning effort with
 `MaxTokens` of 1024 or less.
 
 `ListModels(ctx)` fetches the live `/models` list, including new models. The
-upstream list does not include protocol metadata. A listed model can therefore
-be available upstream but not yet have a local route. Unknown models fail before
-generation or probing; model-name prefixes are not used to guess a protocol.
-Register a documented new route (or override an existing one) explicitly:
+upstream list does not include protocol metadata, so a new model uses
+Completions. Model-name prefixes are not used to guess a protocol. When the
+endpoint table documents a new Responses or Messages model before the SDK
+lists it, register the route (or override an existing one) explicitly:
 
 ```go
 provider := opencodego.New(
@@ -704,7 +707,7 @@ OpenCode's application config and is not part of the API model ID.
 | `WithBaseURL(url)` | Override the base URL, including `/v1` |
 | `WithHTTPClient(client)` | Custom HTTP client |
 | `WithHeaders(headers)` | Snapshot provider-wide HTTP headers |
-| `WithModelProtocols(routes)` | Snapshot explicit additional/overridden model routes |
+| `WithModelProtocols(routes)` | Snapshot additional/overridden per-model routes |
 
 `Test(ctx)` only checks reachability through the public models endpoint; its
 success does not validate credentials or generation access. `TestModel(ctx, id)`

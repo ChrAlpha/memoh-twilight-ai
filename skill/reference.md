@@ -1064,13 +1064,6 @@ const (
 )
 const SessionHeader = "x-opencode-session"
 
-type ModelDescriptor struct {
-    ID          string
-    DisplayName string
-    Protocol    Protocol
-}
-func Catalog() []ModelDescriptor
-
 type Option func(*Provider)
 func WithAPIKey(apiKey string) Option
 func WithBaseURL(baseURL string) Option
@@ -1093,10 +1086,12 @@ Default base URL: `https://opencode.ai/zen/go/v1`. Supply your application's
 User-Agent and a stable conversation ID through `sdk.WithRequestHeaders(ctx,
 map[string]string{opencodego.SessionHeader: conversationID})`.
 
-`Catalog` is the documented routing directory; `ListModels` is the live upstream
-list and may contain models without a local route. `ProtocolForModel` returns an
-error for an unknown model or invalid protocol. Register routes explicitly with
-`WithModelProtocols`; names and prefixes are never used to guess a protocol.
+Models use Completions unless the SDK's small exception table, taken from the
+official endpoint table, routes them to Responses or Messages. `ListModels` is
+the live upstream list; it carries no protocol metadata, so a new model uses
+Completions until it is added to the table or registered with
+`WithModelProtocols`. `ProtocolForModel` returns an error only for an invalid
+protocol; names and prefixes are never used to guess a protocol.
 `Test` checks only public catalog reachability. `TestModel` performs a small,
 potentially billable generation request and requires the same request context as
 normal generation. See [OpenCode Go](../docs/providers.md#opencode-go-provider).

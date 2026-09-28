@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -217,9 +218,6 @@ func TestDiscoveryAndProbes(t *testing.T) {
 			t.Error("discovered model not bound to Go provider")
 		}
 	}
-	if models[0].DisplayName != "GLM-5.2" || models[1].DisplayName != "" {
-		t.Errorf("display names = %q, %q", models[0].DisplayName, models[1].DisplayName)
-	}
 	status := p.Test(context.Background())
 	if status.Status != sdk.ProviderStatusOK || !strings.Contains(status.Message, "TestModel") {
 		t.Fatalf("public catalog test = %+v", status)
@@ -246,7 +244,7 @@ func TestExplicitRoutesAndInputValidation(t *testing.T) {
 		reply(w, opencodego.ProtocolMessages, "new-model", false, false)
 	}))
 	defer srv.Close()
-	overrides := map[string]opencodego.Protocol{"new-model": opencodego.ProtocolMessages, "glm-5.2": opencodego.ProtocolMessages, "bad-model": "invalid"}
+	overrides := map[string]opencodego.Protocol{"new-model": opencodego.ProtocolMessages, "minimax-m2.7": opencodego.ProtocolCompletions, "bad-model": "invalid"}
 	option := opencodego.WithModelProtocols(overrides)
 	overrides["new-model"] = opencodego.ProtocolResponses
 	p := opencodego.New(opencodego.WithBaseURL(srv.URL), option)
@@ -257,19 +255,22 @@ func TestExplicitRoutesAndInputValidation(t *testing.T) {
 	if protocol, _ := other.ProtocolForModel("new-model"); protocol != opencodego.ProtocolResponses {
 		t.Fatal("override not applied")
 	}
-	if protocol, _ := p.ProtocolForModel("glm-5.2"); protocol != opencodego.ProtocolMessages {
+	if protocol, _ := p.ProtocolForModel("minimax-m2.7"); protocol != opencodego.ProtocolCompletions {
 		t.Fatal("built-in route not overridden")
 	}
-	for _, id := range []string{"", "unknown", "glm-future", "bad-model", "opencode-go/glm-5.2"} {
+	if protocol, err := p.ProtocolForModel("glm-future"); protocol != opencodego.ProtocolCompletions || err != nil {
+		t.Fatalf("unlisted model route = %q, %v", protocol, err)
+	}
+	for _, id := range []string{"", "bad-model"} {
 		req := sdk.Request{Model: id}
 		if _, err := p.DoGenerate(context.Background(), req); err == nil {
-			t.Errorf("generated unknown model %q", id)
+			t.Errorf("generated invalid model %q", id)
 		}
 		if _, err := p.DoStream(context.Background(), req); err == nil {
-			t.Errorf("streamed unknown model %q", id)
+			t.Errorf("streamed invalid model %q", id)
 		}
 		if _, err := p.TestModel(context.Background(), id); err == nil {
-			t.Errorf("probed unknown model %q", id)
+			t.Errorf("probed invalid model %q", id)
 		}
 	}
 	if requests.Load() != 0 {
@@ -473,9 +474,9 @@ func TestCompletionsCompat(t *testing.T) {
 	}
 }
 
-// Every catalog model must reach its documented endpoint with the request
-// shape of its protocol.
-func TestCatalogRoutes(t *testing.T) {
+// Every exception must reach its documented endpoint, and any other model
+// Completions, with the request shape of its protocol.
+func TestModelRoutes(t *testing.T) {
 	paths := map[opencodego.Protocol]string{
 		opencodego.ProtocolCompletions: "/chat/completions",
 		opencodego.ProtocolResponses:   "/responses",
@@ -499,28 +500,22 @@ func TestCatalogRoutes(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := opencodego.New(opencodego.WithBaseURL(srv.URL))
-	ids := make(map[string]bool)
-	for _, entry := range opencodego.Catalog() {
-		if ids[entry.ID] {
-			t.Errorf("duplicate catalog entry %q", entry.ID)
-		}
-		ids[entry.ID] = true
-		if entry.DisplayName == "" || paths[entry.Protocol] == "" {
-			t.Errorf("incomplete catalog entry %+v", entry)
+	want := maps.Clone(opencodego.ProtocolExceptions)
+	want["glm-5.2"] = opencodego.ProtocolCompletions
+	want["model-published-tomorrow"] = opencodego.ProtocolCompletions
+	for id, wantProtocol := range want {
+		if paths[wantProtocol] == "" {
+			t.Errorf("%s: unknown protocol %q", id, wantProtocol)
 			continue
 		}
-		protocol.Store(entry.Protocol)
-		model := p.ChatModel(entry.ID)
-		if model.DisplayName != entry.DisplayName {
-			t.Errorf("%s: display name = %q", entry.ID, model.DisplayName)
-		}
-		result, err := model.Generate(context.Background(), sdk.Request{Messages: []sdk.Message{sdk.UserMessage("hi")}})
+		protocol.Store(wantProtocol)
+		result, err := p.ChatModel(id).Generate(context.Background(), sdk.Request{Messages: []sdk.Message{sdk.UserMessage("hi")}})
 		if err != nil || result.Text != "done" {
-			t.Errorf("%s: result = %+v, err = %v", entry.ID, result, err)
+			t.Errorf("%s: result = %+v, err = %v", id, result, err)
 			continue
 		}
-		if got := <-seen; got.path != paths[entry.Protocol] || got.model != entry.ID {
-			t.Errorf("%s: request = %+v, want path %s", entry.ID, got, paths[entry.Protocol])
+		if got := <-seen; got.path != paths[wantProtocol] || got.model != id {
+			t.Errorf("%s: request = %+v, want path %s", id, got, paths[wantProtocol])
 		}
 	}
 }
