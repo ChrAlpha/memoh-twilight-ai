@@ -3,6 +3,7 @@ package responses
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -114,7 +115,7 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 		Prepare: p.prepareRequest,
 	})
 	if err != nil {
-		return sdk.ClassifyProbeError(err)
+		return classifyError(err)
 	}
 	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
 }
@@ -130,7 +131,8 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 	if err == nil {
 		return &sdk.ModelTestResult{Supported: true, Message: "supported"}, nil
 	}
-	if !sdk.IsStatus(err, http.StatusNotFound) {
+	var apiErr *utils.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 		return nil, fmt.Errorf("openai-responses: test model request failed: %w", err)
 	}
 
@@ -189,11 +191,15 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 		Body:    wireReq,
 	})
 	if err != nil {
+		var apiErr *utils.APIError
+		if errors.As(err, &apiErr) {
+			return sdk.ModelResult{}, fmt.Errorf("openai-responses: request failed: %s", apiErr.Detail())
+		}
 		return sdk.ModelResult{}, fmt.Errorf("openai-responses: request failed: %w", err)
 	}
 
 	if resp.Error != nil {
-		return sdk.ModelResult{}, fmt.Errorf("openai-responses: request failed [%s]: %s", resp.Error.Code, resp.Error.Message)
+		return sdk.ModelResult{}, fmt.Errorf("openai-responses: api error [%s]: %s", resp.Error.Code, resp.Error.Message)
 	}
 
 	return p.parseResponse(resp)
@@ -846,7 +852,12 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		})
 
 		if err != nil {
-			send(&sdk.ErrorPart{Error: fmt.Errorf("openai-responses: stream failed: %w", err)})
+			var apiErr *utils.APIError
+			if errors.As(err, &apiErr) {
+				send(&sdk.ErrorPart{Error: fmt.Errorf("openai-responses: stream failed: %s", apiErr.Detail())})
+			} else {
+				send(&sdk.ErrorPart{Error: fmt.Errorf("openai-responses: stream failed: %w", err)})
+			}
 		}
 
 		flush()

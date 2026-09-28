@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -94,7 +95,7 @@ func (p *Provider) ListModels(context.Context) ([]sdk.Model, error) {
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 	_, err := p.TestModel(ctx, Catalog()[0].ID)
 	if err != nil {
-		return sdk.ClassifyProbeError(err)
+		return classifyError(err)
 	}
 	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
 }
@@ -371,7 +372,12 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		})
 
 		if err != nil {
-			send(&sdk.ErrorPart{Error: fmt.Errorf("openai-codex: stream failed: %w", err)})
+			var apiErr *utils.APIError
+			if errors.As(err, &apiErr) {
+				send(&sdk.ErrorPart{Error: fmt.Errorf("openai-codex: stream failed: %s", apiErr.Detail())})
+			} else {
+				send(&sdk.ErrorPart{Error: fmt.Errorf("openai-codex: stream failed: %w", err)})
+			}
 		}
 
 		flush()

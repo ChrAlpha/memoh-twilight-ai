@@ -142,7 +142,7 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 		}
 	}
 	status := sdk.ProviderStatusUnreachable
-	var apiErr *sdk.APIError
+	var apiErr *utils.APIError
 	if errors.As(err, &apiErr) {
 		status = sdk.ProviderStatusUnhealthy
 	}

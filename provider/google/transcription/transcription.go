@@ -160,7 +160,9 @@ func (p *Provider) DoTranscribe(ctx context.Context, params sdk.TranscriptionPar
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("google transcription: %w", sdk.NewAPIErrorFromResponse(resp))
+		var body bytes.Buffer
+		_, _ = body.ReadFrom(resp.Body)
+		return nil, fmt.Errorf("google transcription: unexpected status %d: %s", resp.StatusCode, body.String())
 	}
 
 	var payload struct {

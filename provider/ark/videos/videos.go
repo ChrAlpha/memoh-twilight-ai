@@ -128,7 +128,8 @@ func (p *Provider) DoDownload(ctx context.Context, _ *sdk.VideoModel, output sdk
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", fmt.Errorf("ark videos: download failed: %w", sdk.NewAPIErrorFromResponse(resp))
+		body, _ := io.ReadAll(resp.Body)
+		return nil, "", fmt.Errorf("ark videos: download failed with status %d: %s", resp.StatusCode, string(body))
 	}
 	data, err = io.ReadAll(resp.Body)
 	if err != nil {

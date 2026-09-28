@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-
-	"github.com/felinics/twilight/sdk"
 )
 
 // ErrStreamDone can be returned from an SSE event handler to signal
@@ -57,7 +55,7 @@ func FetchSSE(ctx context.Context, client *http.Client, opts *RequestOptions, on
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return sdk.NewAPIErrorFromResponse(resp)
+		return parseAPIError(resp)
 	}
 
 	scanner := bufio.NewScanner(resp.Body)

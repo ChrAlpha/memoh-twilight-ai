@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -159,7 +160,7 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 		Headers: p.requestHeaders(ctx),
 	})
 	if err != nil {
-		return sdk.ClassifyProbeError(err)
+		return classifyError(err)
 	}
 	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
 }
@@ -175,7 +176,8 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 	if err == nil {
 		return &sdk.ModelTestResult{Supported: true, Message: "supported"}, nil
 	}
-	if !sdk.IsStatus(err, http.StatusNotFound) {
+	var apiErr *utils.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 		return nil, fmt.Errorf("google: test model request failed: %w", err)
 	}
 
@@ -241,6 +243,10 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 		Body:    body,
 	})
 	if err != nil {
+		var apiErr *utils.APIError
+		if errors.As(err, &apiErr) {
+			return sdk.ModelResult{}, fmt.Errorf("google: generateContent request failed: %s", apiErr.Detail())
+		}
 		return sdk.ModelResult{}, fmt.Errorf("google: generateContent request failed: %w", err)
 	}
 
@@ -789,7 +795,12 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		})
 
 		if err != nil {
-			send(&sdk.ErrorPart{Error: fmt.Errorf("google: stream failed: %w", err)})
+			var apiErr *utils.APIError
+			if errors.As(err, &apiErr) {
+				send(&sdk.ErrorPart{Error: fmt.Errorf("google: stream failed: %s", apiErr.Detail())})
+			} else {
+				send(&sdk.ErrorPart{Error: fmt.Errorf("google: stream failed: %w", err)})
+			}
 		}
 
 		flush()
@@ -898,6 +909,29 @@ func functionResponseContent(out sdk.ToolOutput) any {
 		return out.JSON
 	}
 	return out.Text
+}
+
+func classifyError(err error) *sdk.ProviderTestResult {
+	var apiErr *utils.APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden {
+			return &sdk.ProviderTestResult{
+				Status:  sdk.ProviderStatusUnhealthy,
+				Message: fmt.Sprintf("authentication failed: %s", apiErr.Message),
+				Error:   err,
+			}
+		}
+		return &sdk.ProviderTestResult{
+			Status:  sdk.ProviderStatusUnhealthy,
+			Message: fmt.Sprintf("service error (%d): %s", apiErr.StatusCode, apiErr.Message),
+			Error:   err,
+		}
+	}
+	return &sdk.ProviderTestResult{
+		Status:  sdk.ProviderStatusUnreachable,
+		Message: fmt.Sprintf("connection failed: %s", err.Error()),
+		Error:   err,
+	}
 }
 
 func parseDataURI(uri string) (mediaType, data string) {

@@ -100,7 +100,8 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.SpeechModel, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("openrouter speech: %w", sdk.NewAPIErrorFromResponse(resp))
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("openrouter speech: unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
 	rawModels, err := decodeOpenRouterModels(resp.Body)
@@ -237,7 +238,8 @@ func (p *Provider) synthesize(ctx context.Context, text string, cfg audioConfig)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("openrouter speech: %w", sdk.NewAPIErrorFromResponse(resp))
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("openrouter speech: unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
 	chunks, err := collectPCMChunks(resp.Body)

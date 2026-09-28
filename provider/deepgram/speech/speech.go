@@ -113,7 +113,8 @@ func (p *Provider) listModels(ctx context.Context) (*deepgramModelsResponse, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("deepgram speech: %w", sdk.NewAPIErrorFromResponse(resp))
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("deepgram speech: unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var payload deepgramModelsResponse
@@ -198,8 +199,9 @@ func (p *Provider) doRequest(ctx context.Context, text string, cfg audioConfig) 
 		return nil, fmt.Errorf("deepgram speech: request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("deepgram speech: %w", sdk.NewAPIErrorFromResponse(resp))
+		return nil, fmt.Errorf("deepgram speech: unexpected status %d: %s", resp.StatusCode, string(respBody))
 	}
 	return resp.Body, nil
 }

@@ -3,6 +3,7 @@ package copilot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -97,7 +98,7 @@ func (p *Provider) ListModels(context.Context) ([]sdk.Model, error) {
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 	_, err := p.TestModel(ctx, AutoModel)
 	if err != nil {
-		return sdk.ClassifyProbeError(err)
+		return classifyError(err)
 	}
 	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
 }
@@ -153,6 +154,10 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 		Body:    wire,
 	})
 	if err != nil {
+		var apiErr *utils.APIError
+		if errors.As(err, &apiErr) {
+			return sdk.ModelResult{}, fmt.Errorf("github-copilot: chat completions request failed: %s", apiErr.Detail())
+		}
 		return sdk.ModelResult{}, fmt.Errorf("github-copilot: chat completions request failed: %w", err)
 	}
 
@@ -456,7 +461,12 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		})
 
 		if err != nil {
-			sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: stream failed: %w", err)})
+			var apiErr *utils.APIError
+			if errors.As(err, &apiErr) {
+				sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: stream failed: %s", apiErr.Detail())})
+			} else {
+				sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: stream failed: %w", err)})
+			}
 		}
 
 		sp.flush()
@@ -548,6 +558,29 @@ func mapFinishReason(reason string) sdk.FinishReason {
 		return sdk.FinishReasonToolCalls
 	default:
 		return sdk.FinishReasonUnknown
+	}
+}
+
+func classifyError(err error) *sdk.ProviderTestResult {
+	var apiErr *utils.APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden {
+			return &sdk.ProviderTestResult{
+				Status:  sdk.ProviderStatusUnhealthy,
+				Message: fmt.Sprintf("authentication failed: %s", apiErr.Message),
+				Error:   err,
+			}
+		}
+		return &sdk.ProviderTestResult{
+			Status:  sdk.ProviderStatusUnhealthy,
+			Message: fmt.Sprintf("service error (%d): %s", apiErr.StatusCode, apiErr.Message),
+			Error:   err,
+		}
+	}
+	return &sdk.ProviderTestResult{
+		Status:  sdk.ProviderStatusUnreachable,
+		Message: fmt.Sprintf("connection failed: %s", err.Error()),
+		Error:   err,
 	}
 }
 

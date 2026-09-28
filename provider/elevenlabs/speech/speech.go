@@ -86,7 +86,8 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.SpeechModel, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("elevenlabs speech: %w", sdk.NewAPIErrorFromResponse(resp))
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("elevenlabs speech: unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
 	rawModels, err := decodeModelsResponse(resp.Body)
@@ -229,9 +230,17 @@ func (p *Provider) doRequest(ctx context.Context, endpoint, text string, cfg *au
 		return nil, fmt.Errorf("elevenlabs speech: request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		apiErr := sdk.NewAPIErrorFromResponse(resp)
+		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("elevenlabs speech: %w", apiErr)
+		requestID := resp.Header.Get("x-request-id")
+		if requestID == "" {
+			requestID = resp.Header.Get("request-id")
+		}
+		msg := fmt.Sprintf("elevenlabs speech: unexpected status %d: %s", resp.StatusCode, string(respBody))
+		if requestID != "" {
+			msg += " [request_id=" + requestID + "]"
+		}
+		return nil, fmt.Errorf("%s", msg)
 	}
 	return resp.Body, nil
 }
