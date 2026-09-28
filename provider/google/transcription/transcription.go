@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
 	sdk "github.com/felinics/twilight/sdk"
 )
@@ -16,6 +17,9 @@ import (
 const (
 	defaultModelID = "gemini-2.5-flash"
 	defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
+
+	// providerName identifies this package in APIError.Provider.
+	providerName = "google-transcription"
 )
 
 type Option func(*Provider)
@@ -56,10 +60,12 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.TranscriptionModel, e
 		} `json:"models"`
 	}
 	reqOpts := &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Headers: map[string]string{"x-goog-api-key": p.apiKey},
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models",
+		Headers:     map[string]string{"x-goog-api-key": p.apiKey},
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeGoogle,
 	}
 	out, err := utils.FetchJSON[struct {
 		Models []struct {

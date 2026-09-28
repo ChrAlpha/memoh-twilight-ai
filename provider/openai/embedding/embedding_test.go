@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/provider/openai/embedding"
+	"github.com/felinics/twilight/provider/providertest"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -186,9 +187,7 @@ func TestDoEmbed_APIError(t *testing.T) {
 		Model:  model,
 		Values: []string{"hello"},
 	})
-	if err == nil {
-		t.Fatal("expected error for 401 response")
-	}
+	providertest.WantAPIError(t, err, "openai-embedding", 401, sdk.KindAuthentication)
 }
 
 func TestEmbeddingModel(t *testing.T) {

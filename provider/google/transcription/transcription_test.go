@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/felinics/twilight/provider/providertest"
 	sdk "github.com/felinics/twilight/sdk"
 )
 
@@ -48,5 +49,19 @@ func TestProvider_DoTranscribe(t *testing.T) {
 	}
 	if result.Text != "hello from gemini" {
 		t.Fatalf("text = %q", result.Text)
+	}
+}
+
+func TestListModelsHTTPErrorIsAPIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"API_KEY_INVALID","domain":"googleapis.com"}]}}`))
+	}))
+	defer srv.Close()
+	p := New(WithAPIKey("key"), WithBaseURL(srv.URL))
+	_, err := p.ListModels(context.Background())
+	apiErr := providertest.WantAPIError(t, err, providerName, http.StatusBadRequest, sdk.KindAuthentication)
+	if apiErr.Code != "API_KEY_INVALID" {
+		t.Errorf("Code = %q", apiErr.Code)
 	}
 }

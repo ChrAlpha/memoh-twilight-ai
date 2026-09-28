@@ -20,6 +20,7 @@ type SSEEvent struct {
 }
 
 // FetchSSE sends a request and invokes onEvent for each SSE event in the stream.
+// A non-2xx response is returned as *sdk.APIError before any event is read.
 //
 // The onEvent callback can return ErrStreamDone to stop reading and return nil,
 // or any other error to abort the stream (that error is returned to the caller).
@@ -55,7 +56,7 @@ func FetchSSE(ctx context.Context, client *http.Client, opts *RequestOptions, on
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return parseAPIError(resp)
+		return NewHTTPError(opts.Provider, resp, opts.DecodeError)
 	}
 
 	scanner := bufio.NewScanner(resp.Body)

@@ -27,6 +27,12 @@ import (
 
 const conformanceToken = "ghu_conformance_token"
 
+// conformanceErrorBody is a Copilot quota error. GitHub publishes no error
+// format for this API; the envelope and the code are the ones the Copilot
+// Chat client parses (jsonData.error, code prefix "quota_exceeded"):
+// https://github.com/microsoft/vscode/blob/10b02313064d1c1978691b43178542ca20bc8202/extensions/copilot/src/extension/prompt/node/chatMLFetcher.ts
+const conformanceErrorBody = `{"error":{"message":"You have exceeded your monthly quota","code":"quota_exceeded"}}`
+
 func conformanceProvider(baseURL string) sdk.Provider {
 	return copilot.New(
 		copilot.WithGitHubToken(conformanceToken),
@@ -87,9 +93,19 @@ func conformanceTextFixture(t *testing.T) providertest.Fixture {
 		},
 		ReplyError: func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":{"message":"Bad credentials","type":"invalid_request_error"}}`))
+			w.Header().Set("x-github-request-id", "C0DE:1234:5678:9ABC:DEF0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(conformanceErrorBody))
 		},
+		WantError: &sdk.APIError{
+			Provider:   "github-copilot",
+			StatusCode: http.StatusTooManyRequests,
+			Code:       "quota_exceeded",
+			Message:    "You have exceeded your monthly quota",
+			RequestID:  "C0DE:1234:5678:9ABC:DEF0",
+			Kind:       sdk.KindQuotaExhausted,
+		},
+		Secret: conformanceToken,
 		Want: providertest.Want{
 			Text:         "conformance text",
 			FinishReason: sdk.FinishReasonStop,

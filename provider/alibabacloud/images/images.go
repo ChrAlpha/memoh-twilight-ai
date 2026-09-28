@@ -10,9 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
 	"github.com/felinics/twilight/sdk"
 )
+
+// providerName identifies this package in APIError.Provider.
+const providerName = "alibabacloud-images"
 
 const (
 	defaultBaseURL      = "https://dashscope.aliyuncs.com/api/v1"
@@ -154,7 +158,9 @@ func (p *Provider) createTask(ctx context.Context, params *sdk.ImageGenerationPa
 			"Authorization":     utils.BearerToken(p.apiKey),
 			"X-DashScope-Async": "enable",
 		},
-		Body: body,
+		Body:        body,
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeDashScope,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("alibabacloud images: create task request failed: %w", err)
@@ -169,11 +175,13 @@ func (p *Provider) generateQwenMultimodal(ctx context.Context, params *sdk.Image
 		Parameters: imageParameters(params),
 	}
 	resp, err := utils.FetchJSON[dashScopeResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    qwenMultimodalPath,
-		Headers: utils.AuthHeader(p.apiKey),
-		Body:    req,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        qwenMultimodalPath,
+		Headers:     utils.AuthHeader(p.apiKey),
+		Body:        req,
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeDashScope,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("alibabacloud images: qwen multimodal generation request failed: %w", err)
@@ -229,10 +237,12 @@ func (p *Provider) waitTask(ctx context.Context, taskID string) (*sdk.ImageResul
 
 func (p *Provider) getTask(ctx context.Context, taskID string) (*dashScopeResponse, error) {
 	resp, err := utils.FetchJSON[dashScopeResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/tasks/" + taskID,
-		Headers: utils.AuthHeader(p.apiKey),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/tasks/" + taskID,
+		Headers:     utils.AuthHeader(p.apiKey),
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeDashScope,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("alibabacloud images: get task request failed: %w", err)

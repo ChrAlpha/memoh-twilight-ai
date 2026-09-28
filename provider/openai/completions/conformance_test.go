@@ -15,6 +15,19 @@ import (
 // sdk.Generate and sdk.Stream, so these fixtures stay valid across a change to
 // the provider interface itself.
 
+// conformanceErrorBody is OpenAI's 401 response as recorded in the official
+// .NET SDK: https://github.com/openai/openai-dotnet/blob/4e5ae90621089e0b1f5571546a75cea6b0cc713f/tests/SessionRecords/ChatTests/AuthFailure.json
+const conformanceErrorBody = `{
+  "error": {
+    "message": "Incorrect API key provided: not-a-re**************************ized. You can find your API key at https://platform.openai.com/account/api-keys.",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": "invalid_api_key"
+  }
+}`
+
+const conformanceRequestID = "req_conformance_401"
+
 func conformanceProvider(baseURL string) sdk.Provider {
 	return completions.New(completions.WithAPIKey("test-key"), completions.WithBaseURL(baseURL))
 }
@@ -58,9 +71,20 @@ func textFixture(t *testing.T) providertest.Fixture {
 		},
 		ReplyError: func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("x-request-id", conformanceRequestID)
 			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":{"message":"invalid api key","type":"invalid_request_error"}}`))
+			_, _ = w.Write([]byte(conformanceErrorBody))
 		},
+		WantError: &sdk.APIError{
+			Provider:   "openai-completions",
+			StatusCode: http.StatusUnauthorized,
+			Type:       "invalid_request_error",
+			Code:       "invalid_api_key",
+			Message:    "Incorrect API key provided: not-a-re**************************ized. You can find your API key at https://platform.openai.com/account/api-keys.",
+			RequestID:  conformanceRequestID,
+			Kind:       sdk.KindAuthentication,
+		},
+		Secret: "test-key",
 		Want: providertest.Want{
 			Text:         "conformance text",
 			FinishReason: sdk.FinishReasonStop,

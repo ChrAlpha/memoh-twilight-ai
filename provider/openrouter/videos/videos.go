@@ -10,11 +10,15 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
 	"github.com/felinics/twilight/sdk"
 )
 
 const defaultBaseURL = "https://openrouter.ai/api"
+
+// providerName identifies this package in APIError.Provider.
+const providerName = "openrouter-videos"
 
 type Provider struct {
 	apiKey     string
@@ -54,10 +58,12 @@ func (p *Provider) VideoModel(id string) *sdk.VideoModel {
 
 func (p *Provider) ListModels(ctx context.Context) ([]*sdk.VideoModel, error) {
 	resp, err := utils.FetchJSON[listModelsResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/v1/videos/models",
-		Headers: utils.AuthHeader(p.apiKey),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/v1/videos/models",
+		Headers:     utils.AuthHeader(p.apiKey),
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeOpenRouter,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openrouter videos: list models request failed: %w", err)
@@ -132,11 +138,13 @@ func (p *Provider) DoCreate(ctx context.Context, params sdk.VideoParams) (*sdk.V
 	}
 
 	resp, err := utils.FetchJSON[videoResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/v1/videos",
-		Headers: utils.AuthHeader(p.apiKey),
-		Body:    req,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/v1/videos",
+		Headers:     utils.AuthHeader(p.apiKey),
+		Body:        req,
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeOpenRouter,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openrouter videos: create request failed: %w", err)
@@ -146,10 +154,12 @@ func (p *Provider) DoCreate(ctx context.Context, params sdk.VideoParams) (*sdk.V
 
 func (p *Provider) DoGet(ctx context.Context, model *sdk.VideoModel, id string) (*sdk.VideoJob, error) {
 	resp, err := utils.FetchJSON[videoResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/v1/videos/" + id,
-		Headers: utils.AuthHeader(p.apiKey),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/v1/videos/" + id,
+		Headers:     utils.AuthHeader(p.apiKey),
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeOpenRouter,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openrouter videos: get request failed: %w", err)

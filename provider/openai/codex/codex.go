@@ -3,7 +3,6 @@ package codex
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 
@@ -209,11 +208,13 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		}
 
 		err := utils.FetchSSE(ctx, p.httpClient, &utils.RequestOptions{
-			Method:  http.MethodPost,
-			BaseURL: p.baseURL,
-			Path:    "/codex/responses",
-			Headers: p.requestHeaders(ctx),
-			Body:    out,
+			Method:      http.MethodPost,
+			BaseURL:     p.baseURL,
+			Path:        "/codex/responses",
+			Headers:     p.requestHeaders(ctx),
+			Body:        out,
+			Provider:    p.Name(),
+			DecodeError: decodeError,
 		}, func(ev *utils.SSEEvent) error {
 			switch ev.Event {
 			case "response.created":
@@ -372,12 +373,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		})
 
 		if err != nil {
-			var apiErr *utils.APIError
-			if errors.As(err, &apiErr) {
-				send(&sdk.ErrorPart{Error: fmt.Errorf("openai-codex: stream failed: %s", apiErr.Detail())})
-			} else {
-				send(&sdk.ErrorPart{Error: fmt.Errorf("openai-codex: stream failed: %w", err)})
-			}
+			send(&sdk.ErrorPart{Error: fmt.Errorf("openai-codex: stream failed: %w", err)})
 		}
 
 		flush()

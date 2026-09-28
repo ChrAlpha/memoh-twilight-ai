@@ -63,11 +63,13 @@ func (p *Provider) DoCreate(ctx context.Context, params sdk.VideoParams) (*sdk.V
 	}
 	body := p.buildCreateBody(&params)
 	resp, err := utils.FetchJSON[map[string]any](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/contents/generations/tasks",
-		Headers: utils.AuthHeader(p.apiKey),
-		Body:    body,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/contents/generations/tasks",
+		Headers:     utils.AuthHeader(p.apiKey),
+		Body:        body,
+		Provider:    providerName,
+		DecodeError: decodeError,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ark videos: create request failed: %w", err)
@@ -77,10 +79,12 @@ func (p *Provider) DoCreate(ctx context.Context, params sdk.VideoParams) (*sdk.V
 
 func (p *Provider) DoGet(ctx context.Context, model *sdk.VideoModel, id string) (*sdk.VideoJob, error) {
 	resp, err := utils.FetchJSON[map[string]any](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/contents/generations/tasks/" + id,
-		Headers: utils.AuthHeader(p.apiKey),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/contents/generations/tasks/" + id,
+		Headers:     utils.AuthHeader(p.apiKey),
+		Provider:    providerName,
+		DecodeError: decodeError,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ark videos: get request failed: %w", err)
@@ -94,10 +98,12 @@ func (p *Provider) DoGet(ctx context.Context, model *sdk.VideoModel, id string) 
 
 func (p *Provider) DoCancel(ctx context.Context, _ *sdk.VideoModel, id string) error {
 	resp, err := utils.FetchRaw(ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodDelete,
-		BaseURL: p.baseURL,
-		Path:    "/contents/generations/tasks/" + id,
-		Headers: utils.AuthHeader(p.apiKey),
+		Method:      http.MethodDelete,
+		BaseURL:     p.baseURL,
+		Path:        "/contents/generations/tasks/" + id,
+		Headers:     utils.AuthHeader(p.apiKey),
+		Provider:    providerName,
+		DecodeError: decodeError,
 	})
 	if err != nil {
 		return fmt.Errorf("ark videos: cancel/delete request failed: %w", err)

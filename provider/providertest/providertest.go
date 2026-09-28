@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,8 +43,16 @@ type Fixture struct {
 	// ReplyStream answers a streaming request. Nil skips the stream case.
 	ReplyStream http.HandlerFunc
 	// ReplyError answers a request with a provider-shaped error. Nil skips the
-	// error case.
+	// error case. It answers both the generated and the streamed request.
 	ReplyError http.HandlerFunc
+	// WantError is the *sdk.APIError that ReplyError must surface on both
+	// paths. Provider, StatusCode, Type, Code, Message, RequestID and Kind are
+	// compared; Header and Body must be what ReplyError wrote. Nil only checks
+	// that the reply becomes an error.
+	WantError *sdk.APIError
+	// Secret is the credential NewProvider authenticates with. It must not
+	// appear in the error text.
+	Secret string
 	// Options, when set, is sent as this provider's own entry in
 	// Request.ProviderOptions (keyed by Provider.Name()) and must reach the
 	// request body: an option the provider silently drops is indistinguishable
@@ -306,18 +315,113 @@ func testStream(t *testing.T, f Fixture) {
 }
 
 // testError covers the swallow-the-error failure: a provider-shaped error reply
-// must become an error rather than an empty success.
+// must become an error rather than an empty success, and on both paths that
+// error must be the *sdk.APIError the reply describes.
 func testError(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	if f.ReplyError == nil {
 		t.Skip("provider has no error fixture")
 	}
-	p, _ := serve(t, f, f.ReplyError)
+	var written capturedReply
+	p, _ := serve(t, f, written.capture(f.ReplyError))
 	req := f.withOptions(p, request())
 	req.Model = f.ModelID
-	if result, err := f.model(p).Generate(ctx, req); err == nil {
+	result, err := f.model(p).Generate(ctx, req)
+	if err == nil {
 		t.Fatalf("an error reply mapped to a success: %+v", result)
 	}
+	wantAPIError(t, "generate", f, err, &written)
+	if f.ReplyStream == nil {
+		return
+	}
+	stream, err := f.model(p).Stream(ctx, req)
+	if err == nil {
+		for range stream.Parts {
+		}
+		_, err = stream.Result()
+	}
+	if err == nil {
+		t.Fatal("stream: an error reply mapped to a success")
+	}
+	wantAPIError(t, "stream", f, err, &written)
+}
+
+func wantAPIError(t *testing.T, op string, f Fixture, err error, written *capturedReply) {
+	t.Helper()
+	if f.WantError == nil {
+		return
+	}
+	var got *sdk.APIError
+	if !errors.As(err, &got) {
+		t.Fatalf("%s: error %q (%T) does not unwrap to *sdk.APIError", op, err, err)
+	}
+	want := f.WantError
+	for _, c := range []struct {
+		field     string
+		got, want any
+	}{
+		{"Provider", got.Provider, want.Provider},
+		{"StatusCode", got.StatusCode, want.StatusCode},
+		{"Type", got.Type, want.Type},
+		{"Code", got.Code, want.Code},
+		{"Message", got.Message, want.Message},
+		{"RequestID", got.RequestID, want.RequestID},
+		{"Kind", got.Kind, want.Kind},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s: APIError.%s = %v, want %v", op, c.field, c.got, c.want)
+		}
+	}
+	if kind := sdk.KindOf(err); kind != want.Kind {
+		t.Errorf("%s: KindOf = %q, want %q", op, kind, want.Kind)
+	}
+	body, header := written.last()
+	if !bytes.Equal(got.Body, body) {
+		t.Errorf("%s: APIError.Body = %q, want the reply body %q", op, got.Body, body)
+	}
+	for name := range header {
+		if got.Header.Get(name) != header.Get(name) {
+			t.Errorf("%s: APIError.Header[%s] = %q, want %q", op, name, got.Header.Get(name), header.Get(name))
+		}
+	}
+	for _, text := range []string{err.Error(), fmt.Sprintf("%v", err), fmt.Sprintf("%+v", err)} {
+		if f.Secret != "" && strings.Contains(text, f.Secret) {
+			t.Errorf("%s: error text %q contains the credential", op, text)
+		}
+		if strings.Contains(text, string(body)) {
+			t.Errorf("%s: error text %q contains the raw reply body", op, text)
+		}
+	}
+}
+
+// capturedReply records what a handler wrote, so the suite can compare the
+// APIError against the reply itself rather than against a copy in the fixture.
+type capturedReply struct {
+	mu     sync.Mutex
+	body   []byte
+	header http.Header
+}
+
+func (c *capturedReply) capture(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rec := httptest.NewRecorder()
+		next(rec, r)
+		c.mu.Lock()
+		c.body = rec.Body.Bytes()
+		c.header = rec.Header().Clone()
+		c.mu.Unlock()
+		for name, values := range rec.Header() {
+			w.Header()[name] = values
+		}
+		w.WriteHeader(rec.Code)
+		_, _ = w.Write(rec.Body.Bytes())
+	}
+}
+
+func (c *capturedReply) last() ([]byte, http.Header) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.body, c.header
 }
 
 // wantResult asserts the provider-neutral meaning of a result, on the same

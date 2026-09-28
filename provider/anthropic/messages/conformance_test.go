@@ -21,10 +21,25 @@ import (
 // TestDoGenerate_ToolCall / TestDoStream_ToolCall for the tool_use reply, plus
 // TestDoGenerate_ErrorResponse for the error body.
 
-const conformanceModel = "claude-sonnet-4-20250514"
+const (
+	conformanceModel  = "claude-sonnet-4-20250514"
+	conformanceAPIKey = "test-key"
+
+	// conformanceErrorBody and conformanceRequestID are verbatim from
+	// https://platform.claude.com/docs/en/api/errors (Error shapes; Request ID).
+	conformanceErrorBody = `{
+  "type": "error",
+  "error": {
+    "type": "not_found_error",
+    "message": "The requested resource could not be found."
+  },
+  "request_id": "req_011CSHoEeqs5C35K2UUqR7Fy"
+}`
+	conformanceRequestID = "req_018EeWyXxfu5pfWkrYcMdjWG"
+)
 
 func conformanceProvider(baseURL string) sdk.Provider {
-	return messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(baseURL))
+	return messages.New(messages.WithAPIKey(conformanceAPIKey), messages.WithBaseURL(baseURL))
 }
 
 // sseEvents writes an Anthropic event stream. Anthropic names every event
@@ -69,9 +84,19 @@ func textFixture(t *testing.T) providertest.Fixture {
 		},
 		ReplyError: func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`))
+			w.Header().Set("request-id", conformanceRequestID)
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(conformanceErrorBody))
 		},
+		WantError: &sdk.APIError{
+			Provider:   "anthropic-messages",
+			StatusCode: http.StatusNotFound,
+			Type:       "not_found_error",
+			Message:    "The requested resource could not be found.",
+			RequestID:  conformanceRequestID,
+			Kind:       sdk.KindUnknown,
+		},
+		Secret: conformanceAPIKey,
 		Want: providertest.Want{
 			Text:         "conformance text",
 			FinishReason: sdk.FinishReasonStop,

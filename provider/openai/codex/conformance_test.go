@@ -94,14 +94,28 @@ func assertCodexRequest(t *testing.T, r *http.Request) {
 	}
 }
 
-// conformanceError is a provider-shaped failure. The Codex endpoint reports an
-// expired or invalid access token as a non-2xx JSON body, which FetchSSE turns
-// into *utils.APIError (sse.go:57, fetch.go:212); the provider must surface
-// that as an error rather than an empty success (codex.go:378).
+// conformanceError answers with the ChatGPT plan limit error. The body is the
+// one the Codex CLI's own tests feed its HTTP error mapper:
+// https://github.com/openai/codex/blob/44fe510ce3ee61c8ef623adcbf89b901c73ddd61/codex-rs/codex-api/src/api_bridge_tests.rs
+// (map_api_error_does_not_fallback_limit_name_to_limit_id). FetchSSE turns
+// the 429 into an *sdk.APIError before any event is read.
 func conformanceError(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
-	_, _ = w.Write([]byte(`{"error":{"message":"invalid access token","type":"invalid_request_error","code":"invalid_api_key"}}`))
+	w.Header().Set("x-request-id", "req_conformance_429")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_, _ = w.Write([]byte(`{"error":{"type":"usage_limit_reached","plan_type":"pro"}}`))
+}
+
+// conformanceWantError is what conformanceError decodes to: the plan limit is
+// a quota, not a transient rate limit, whatever the 429 says.
+func conformanceWantError() *sdk.APIError {
+	return &sdk.APIError{
+		Provider:   "openai-codex",
+		StatusCode: http.StatusTooManyRequests,
+		Type:       "usage_limit_reached",
+		RequestID:  "req_conformance_429",
+		Kind:       sdk.KindQuotaExhausted,
+	}
 }
 
 // textFixture answers with plain text. The answer arrives split across two
@@ -124,6 +138,8 @@ func textFixture(t *testing.T) providertest.Fixture {
 		Reply:       reply,
 		ReplyStream: reply,
 		ReplyError:  conformanceError,
+		WantError:   conformanceWantError(),
+		Secret:      "test-key",
 		Want: providertest.Want{
 			Text:         "conformance text",
 			FinishReason: sdk.FinishReasonStop,
@@ -162,6 +178,8 @@ func toolCallFixture(t *testing.T) providertest.Fixture {
 		Reply:       reply,
 		ReplyStream: reply,
 		ReplyError:  conformanceError,
+		WantError:   conformanceWantError(),
+		Secret:      "test-key",
 		Want: providertest.Want{
 			FinishReason: sdk.FinishReasonToolCalls,
 			TotalTokens:  7,

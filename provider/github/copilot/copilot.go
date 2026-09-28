@@ -147,17 +147,15 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 	}
 
 	resp, err := utils.FetchJSON[chatResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/chat/completions",
-		Headers: p.requestHeaders(ctx),
-		Body:    wire,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/chat/completions",
+		Headers:     p.requestHeaders(ctx),
+		Body:        wire,
+		Provider:    p.Name(),
+		DecodeError: decodeError,
 	})
 	if err != nil {
-		var apiErr *utils.APIError
-		if errors.As(err, &apiErr) {
-			return sdk.ModelResult{}, fmt.Errorf("github-copilot: chat completions request failed: %s", apiErr.Detail())
-		}
 		return sdk.ModelResult{}, fmt.Errorf("github-copilot: chat completions request failed: %w", err)
 	}
 
@@ -441,11 +439,13 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		}
 
 		err := utils.FetchSSE(ctx, p.httpClient, &utils.RequestOptions{
-			Method:  http.MethodPost,
-			BaseURL: p.baseURL,
-			Path:    "/chat/completions",
-			Headers: p.requestHeaders(ctx),
-			Body:    wire,
+			Method:      http.MethodPost,
+			BaseURL:     p.baseURL,
+			Path:        "/chat/completions",
+			Headers:     p.requestHeaders(ctx),
+			Body:        wire,
+			Provider:    p.Name(),
+			DecodeError: decodeError,
 		}, func(ev *utils.SSEEvent) error {
 			if ev.Data == "[DONE]" {
 				return utils.ErrStreamDone
@@ -461,12 +461,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		})
 
 		if err != nil {
-			var apiErr *utils.APIError
-			if errors.As(err, &apiErr) {
-				sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: stream failed: %s", apiErr.Detail())})
-			} else {
-				sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: stream failed: %w", err)})
-			}
+			sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: stream failed: %w", err)})
 		}
 
 		sp.flush()
@@ -562,7 +557,7 @@ func mapFinishReason(reason string) sdk.FinishReason {
 }
 
 func classifyError(err error) *sdk.ProviderTestResult {
-	var apiErr *utils.APIError
+	var apiErr *sdk.APIError
 	if errors.As(err, &apiErr) {
 		if apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden {
 			return &sdk.ProviderTestResult{

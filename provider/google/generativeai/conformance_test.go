@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/felinics/twilight/provider/google/generativeai"
@@ -74,16 +75,56 @@ func googleSSE(w http.ResponseWriter, chunks ...string) {
 	}
 }
 
-// googleErrorHandler answers with the provider-shaped error body
-// generativeai_test.go:1544-1547 uses; utils.FetchJSON promotes a non-2xx
-// response carrying {"error":{...}} to an *APIError (fetch.go:120-121,
-// :212-224), which DoGenerate turns into a failure (generativeai.go:235-241).
+// googleErrorBody is the google.rpc.Status example from Google's API design
+// guide, verbatim: https://cloud.google.com/apis/design/errors (Error model).
+const googleErrorBody = `{
+  "error": {
+    "code": 429,
+    "message": "The zone 'us-east1-a' does not have enough resources available to fulfill the request. Try a different zone, or try again later.",
+    "status": "RESOURCE_EXHAUSTED",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "RESOURCE_AVAILABILITY",
+        "domain": "compute.googleapis.com",
+        "metadata": {
+          "zone": "us-east1-a",
+          "vmType": "e2-medium",
+          "attachment": "local-ssd=3,nvidia-t4=2",
+          "zonesWithCapacity": "us-central1-f,us-central1-c"
+        }
+      }
+    ]
+  }
+}`
+
+// googleErrorHandler answers both the generate and the stream request with
+// the google.rpc.Status error body, which utils.FetchJSON and utils.FetchSSE
+// turn into an *sdk.APIError.
 func googleErrorHandler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		assertGoogleRequest(t, r, "generateContent")
+		method := "generateContent"
+		if strings.HasSuffix(r.URL.Path, ":streamGenerateContent") {
+			method = "streamGenerateContent"
+		}
+		assertGoogleRequest(t, r, method)
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"error":{"message":"API key not valid"}}`))
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(googleErrorBody))
+	}
+}
+
+// googleWantError is what googleErrorBody decodes to. The ErrorInfo reason is
+// not one the SDK maps, so Kind comes from the RESOURCE_EXHAUSTED status. The
+// Gemini API documents no request ID header.
+func googleWantError() *sdk.APIError {
+	return &sdk.APIError{
+		Provider:   "google-generative-ai",
+		StatusCode: http.StatusTooManyRequests,
+		Type:       "RESOURCE_EXHAUSTED",
+		Code:       "RESOURCE_AVAILABILITY",
+		Message:    "The zone 'us-east1-a' does not have enough resources available to fulfill the request. Try a different zone, or try again later.",
+		Kind:       sdk.KindRateLimited,
 	}
 }
 
@@ -109,6 +150,8 @@ func textFixture(t *testing.T) providertest.Fixture {
 			)
 		},
 		ReplyError: googleErrorHandler(t),
+		WantError:  googleWantError(),
+		Secret:     conformanceAPIKey,
 		Want: providertest.Want{
 			Text:         "conformance text",
 			FinishReason: sdk.FinishReasonStop,

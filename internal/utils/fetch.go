@@ -18,36 +18,11 @@ type RequestOptions struct {
 	Query   map[string]string
 	Body    any
 	Prepare func(*http.Request) error
-}
 
-type APIError struct {
-	StatusCode int    `json:"status_code"`
-	Status     string `json:"status"`
-	Message    string `json:"message"`
-	RawBody    []byte `json:"-"`
-}
-
-func (e *APIError) Error() string {
-	if e.Message != "" {
-		return fmt.Sprintf("api error %d: %s", e.StatusCode, e.Message)
-	}
-	return fmt.Sprintf("api error %d: %s", e.StatusCode, e.Status)
-}
-
-// Detail returns the error message with the raw response body appended
-// when available, useful for diagnosing opaque upstream errors like
-// "Provider returned error".
-func (e *APIError) Detail() string {
-	base := e.Error()
-	if len(e.RawBody) == 0 {
-		return base
-	}
-	const maxBody = 1024
-	body := string(e.RawBody)
-	if len(body) > maxBody {
-		body = body[:maxBody] + "...(truncated)"
-	}
-	return fmt.Sprintf("%s [body: %s]", base, body)
+	// Provider and DecodeError build the *sdk.APIError returned for a non-2xx
+	// response; see NewHTTPError.
+	Provider    string
+	DecodeError ErrorDecoder
 }
 
 func BuildRequest(ctx context.Context, opts *RequestOptions) (*http.Request, error) {
@@ -96,7 +71,7 @@ func BuildRequest(ctx context.Context, opts *RequestOptions) (*http.Request, err
 }
 
 // FetchJSON sends a JSON request and decodes the response into type T.
-// Non-2xx responses are returned as *APIError.
+// Non-2xx responses are returned as *sdk.APIError.
 func FetchJSON[T any](ctx context.Context, client *http.Client, opts *RequestOptions) (*T, error) {
 	if opts.Headers == nil {
 		opts.Headers = make(map[string]string)
@@ -117,7 +92,7 @@ func FetchJSON[T any](ctx context.Context, client *http.Client, opts *RequestOpt
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, parseAPIError(resp)
+		return nil, NewHTTPError(opts.Provider, resp, opts.DecodeError)
 	}
 
 	var result T
@@ -129,7 +104,7 @@ func FetchJSON[T any](ctx context.Context, client *http.Client, opts *RequestOpt
 
 // FetchRaw sends a request and returns the raw *http.Response.
 // The caller is responsible for closing the response body.
-// Non-2xx responses are returned as *APIError (body already closed).
+// Non-2xx responses are returned as *sdk.APIError (body already closed).
 func FetchRaw(ctx context.Context, client *http.Client, opts *RequestOptions) (*http.Response, error) {
 	req, err := BuildRequest(ctx, opts)
 	if err != nil {
@@ -143,7 +118,7 @@ func FetchRaw(ctx context.Context, client *http.Client, opts *RequestOptions) (*
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
-		return nil, parseAPIError(resp)
+		return nil, NewHTTPError(opts.Provider, resp, opts.DecodeError)
 	}
 
 	return resp, nil
@@ -206,31 +181,4 @@ func buildURLWithQuery(baseURL, path string, query map[string]string) (string, e
 	}
 
 	return u.String(), nil
-}
-
-func parseAPIError(resp *http.Response) *APIError {
-	body, _ := io.ReadAll(resp.Body)
-
-	apiErr := &APIError{
-		StatusCode: resp.StatusCode,
-		Status:     resp.Status,
-		RawBody:    body,
-	}
-
-	var parsed struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-		Message string `json:"message"`
-	}
-	if json.Unmarshal(body, &parsed) == nil {
-		switch {
-		case parsed.Error.Message != "":
-			apiErr.Message = parsed.Error.Message
-		case parsed.Message != "":
-			apiErr.Message = parsed.Message
-		}
-	}
-
-	return apiErr
 }

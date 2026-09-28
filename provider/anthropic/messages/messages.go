@@ -282,10 +282,12 @@ func (p *Provider) Name() string {
 
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	resp, err := utils.FetchJSON[modelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Headers: p.requestHeaders(ctx),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models",
+		Headers:     p.requestHeaders(ctx),
+		Provider:    p.Name(),
+		DecodeError: decodeError,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: list models request failed: %w", err)
@@ -305,11 +307,13 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 	_, err := utils.FetchJSON[modelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Query:   map[string]string{"limit": "1"},
-		Headers: p.requestHeaders(ctx),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models",
+		Query:       map[string]string{"limit": "1"},
+		Headers:     p.requestHeaders(ctx),
+		Provider:    p.Name(),
+		DecodeError: decodeError,
 	})
 	if err != nil {
 		return classifyError(err)
@@ -319,15 +323,17 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
 	_, err := utils.FetchJSON[anthropicModelObject](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models/" + modelID,
-		Headers: p.requestHeaders(ctx),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models/" + modelID,
+		Headers:     p.requestHeaders(ctx),
+		Provider:    p.Name(),
+		DecodeError: decodeError,
 	})
 	if err == nil {
 		return &sdk.ModelTestResult{Supported: true, Message: "supported"}, nil
 	}
-	var apiErr *utils.APIError
+	var apiErr *sdk.APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 		return nil, fmt.Errorf("anthropic: test model request failed: %w", err)
 	}
@@ -383,17 +389,15 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 	}
 
 	resp, err := utils.FetchJSON[messagesResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/messages",
-		Headers: p.requestHeaders(ctx),
-		Body:    body,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/messages",
+		Headers:     p.requestHeaders(ctx),
+		Body:        body,
+		Provider:    p.Name(),
+		DecodeError: decodeError,
 	})
 	if err != nil {
-		var apiErr *utils.APIError
-		if errors.As(err, &apiErr) {
-			return sdk.ModelResult{}, fmt.Errorf("anthropic: messages request failed: %s", apiErr.Detail())
-		}
 		return sdk.ModelResult{}, fmt.Errorf("anthropic: messages request failed: %w", err)
 	}
 
@@ -864,20 +868,17 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		}
 
 		err := utils.FetchSSE(ctx, p.httpClient, &utils.RequestOptions{
-			Method:  http.MethodPost,
-			BaseURL: p.baseURL,
-			Path:    "/messages",
-			Headers: p.requestHeaders(ctx),
-			Body:    body,
+			Method:      http.MethodPost,
+			BaseURL:     p.baseURL,
+			Path:        "/messages",
+			Headers:     p.requestHeaders(ctx),
+			Body:        body,
+			Provider:    p.Name(),
+			DecodeError: decodeError,
 		}, h.handleEvent)
 
 		if err != nil {
-			var apiErr *utils.APIError
-			if errors.As(err, &apiErr) {
-				h.send(&sdk.ErrorPart{Error: fmt.Errorf("anthropic: stream failed: %s", apiErr.Detail())})
-			} else {
-				h.send(&sdk.ErrorPart{Error: fmt.Errorf("anthropic: stream failed: %w", err)})
-			}
+			h.send(&sdk.ErrorPart{Error: fmt.Errorf("anthropic: stream failed: %w", err)})
 		}
 
 		h.send(&sdk.FinishPart{
@@ -1174,7 +1175,7 @@ func redactedDataOf(meta sdk.ProviderMetadata) string {
 }
 
 func classifyError(err error) *sdk.ProviderTestResult {
-	var apiErr *utils.APIError
+	var apiErr *sdk.APIError
 	if errors.As(err, &apiErr) {
 		if apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden {
 			return &sdk.ProviderTestResult{

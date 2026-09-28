@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/provider/google/embedding"
+	"github.com/felinics/twilight/provider/providertest"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -246,9 +247,7 @@ func TestDoEmbed_APIError(t *testing.T) {
 		Model:  model,
 		Values: []string{"hello"},
 	})
-	if err == nil {
-		t.Fatal("expected error for 403 response")
-	}
+	providertest.WantAPIError(t, err, "google-embedding", 403, sdk.KindPermissionDenied)
 }
 
 // ---------- EmbeddingModel factory ----------

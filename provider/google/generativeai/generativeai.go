@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/messagecompat"
 	"github.com/felinics/twilight/internal/utils"
 	"github.com/felinics/twilight/sdk"
@@ -129,10 +130,12 @@ func (p *Provider) Name() string {
 
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	resp, err := utils.FetchJSON[googleModelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Headers: p.requestHeaders(ctx),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models",
+		Headers:     p.requestHeaders(ctx),
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeGoogle,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("google: list models request failed: %w", err)
@@ -153,11 +156,13 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 	_, err := utils.FetchJSON[googleModelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Query:   map[string]string{"pageSize": "1"},
-		Headers: p.requestHeaders(ctx),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models",
+		Query:       map[string]string{"pageSize": "1"},
+		Headers:     p.requestHeaders(ctx),
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeGoogle,
 	})
 	if err != nil {
 		return classifyError(err)
@@ -168,15 +173,17 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
 	modelPath := getModelPath(modelID)
 	_, err := utils.FetchJSON[googleModelObject](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/" + modelPath,
-		Headers: p.requestHeaders(ctx),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/" + modelPath,
+		Headers:     p.requestHeaders(ctx),
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeGoogle,
 	})
 	if err == nil {
 		return &sdk.ModelTestResult{Supported: true, Message: "supported"}, nil
 	}
-	var apiErr *utils.APIError
+	var apiErr *sdk.APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 		return nil, fmt.Errorf("google: test model request failed: %w", err)
 	}
@@ -236,17 +243,15 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 	modelPath := getModelPath(req.Model)
 
 	resp, err := utils.FetchJSON[generateResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/" + modelPath + ":generateContent",
-		Headers: p.requestHeaders(ctx),
-		Body:    body,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/" + modelPath + ":generateContent",
+		Headers:     p.requestHeaders(ctx),
+		Body:        body,
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeGoogle,
 	})
 	if err != nil {
-		var apiErr *utils.APIError
-		if errors.As(err, &apiErr) {
-			return sdk.ModelResult{}, fmt.Errorf("google: generateContent request failed: %s", apiErr.Detail())
-		}
 		return sdk.ModelResult{}, fmt.Errorf("google: generateContent request failed: %w", err)
 	}
 
@@ -664,12 +669,14 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		}
 
 		err := utils.FetchSSE(ctx, p.httpClient, &utils.RequestOptions{
-			Method:  http.MethodPost,
-			BaseURL: p.baseURL,
-			Path:    "/" + modelPath + ":streamGenerateContent",
-			Query:   map[string]string{"alt": "sse"},
-			Headers: p.requestHeaders(ctx),
-			Body:    body,
+			Method:      http.MethodPost,
+			BaseURL:     p.baseURL,
+			Path:        "/" + modelPath + ":streamGenerateContent",
+			Query:       map[string]string{"alt": "sse"},
+			Headers:     p.requestHeaders(ctx),
+			Body:        body,
+			Provider:    p.Name(),
+			DecodeError: errorformat.DecodeGoogle,
 		}, func(ev *utils.SSEEvent) error {
 			var chunk generateResponse
 			if err := json.Unmarshal([]byte(ev.Data), &chunk); err != nil {
@@ -795,12 +802,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		})
 
 		if err != nil {
-			var apiErr *utils.APIError
-			if errors.As(err, &apiErr) {
-				send(&sdk.ErrorPart{Error: fmt.Errorf("google: stream failed: %s", apiErr.Detail())})
-			} else {
-				send(&sdk.ErrorPart{Error: fmt.Errorf("google: stream failed: %w", err)})
-			}
+			send(&sdk.ErrorPart{Error: fmt.Errorf("google: stream failed: %w", err)})
 		}
 
 		flush()
@@ -912,7 +914,7 @@ func functionResponseContent(out sdk.ToolOutput) any {
 }
 
 func classifyError(err error) *sdk.ProviderTestResult {
-	var apiErr *utils.APIError
+	var apiErr *sdk.APIError
 	if errors.As(err, &apiErr) {
 		if apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden {
 			return &sdk.ProviderTestResult{

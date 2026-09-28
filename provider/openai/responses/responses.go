@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/messagecompat"
 	"github.com/felinics/twilight/internal/utils"
 	openaiutil "github.com/felinics/twilight/provider/openai"
@@ -84,11 +85,13 @@ func (p *Provider) Name() string { return "openai-responses" }
 
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	resp, err := utils.FetchJSON[modelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Headers: p.requestHeaders(ctx),
-		Prepare: p.prepareRequest,
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models",
+		Headers:     p.requestHeaders(ctx),
+		Prepare:     p.prepareRequest,
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openai-responses: list models request failed: %w", err)
@@ -107,12 +110,14 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 	_, err := utils.FetchJSON[modelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Query:   map[string]string{"limit": "1"},
-		Headers: p.requestHeaders(ctx),
-		Prepare: p.prepareRequest,
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models",
+		Query:       map[string]string{"limit": "1"},
+		Headers:     p.requestHeaders(ctx),
+		Prepare:     p.prepareRequest,
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
 		return classifyError(err)
@@ -122,16 +127,18 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
 	_, err := utils.FetchJSON[modelObject](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models/" + modelID,
-		Headers: p.requestHeaders(ctx),
-		Prepare: p.prepareRequest,
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models/" + modelID,
+		Headers:     p.requestHeaders(ctx),
+		Prepare:     p.prepareRequest,
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err == nil {
 		return &sdk.ModelTestResult{Supported: true, Message: "supported"}, nil
 	}
-	var apiErr *utils.APIError
+	var apiErr *sdk.APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 		return nil, fmt.Errorf("openai-responses: test model request failed: %w", err)
 	}
@@ -183,18 +190,16 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 	}
 
 	resp, err := utils.FetchJSON[responsesResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/responses",
-		Headers: p.requestHeaders(ctx),
-		Prepare: p.prepareRequest,
-		Body:    wireReq,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/responses",
+		Headers:     p.requestHeaders(ctx),
+		Prepare:     p.prepareRequest,
+		Body:        wireReq,
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
-		var apiErr *utils.APIError
-		if errors.As(err, &apiErr) {
-			return sdk.ModelResult{}, fmt.Errorf("openai-responses: request failed: %s", apiErr.Detail())
-		}
 		return sdk.ModelResult{}, fmt.Errorf("openai-responses: request failed: %w", err)
 	}
 
@@ -633,12 +638,14 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		}
 
 		err := utils.FetchSSE(ctx, p.httpClient, &utils.RequestOptions{
-			Method:  http.MethodPost,
-			BaseURL: p.baseURL,
-			Path:    "/responses",
-			Headers: p.requestHeaders(ctx),
-			Prepare: p.prepareRequest,
-			Body:    wireReq,
+			Method:      http.MethodPost,
+			BaseURL:     p.baseURL,
+			Path:        "/responses",
+			Headers:     p.requestHeaders(ctx),
+			Prepare:     p.prepareRequest,
+			Body:        wireReq,
+			Provider:    p.Name(),
+			DecodeError: errorformat.DecodeOpenAI,
 		}, func(ev *utils.SSEEvent) error {
 			eventType := ev.Event
 			if eventType == "" {
@@ -852,12 +859,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		})
 
 		if err != nil {
-			var apiErr *utils.APIError
-			if errors.As(err, &apiErr) {
-				send(&sdk.ErrorPart{Error: fmt.Errorf("openai-responses: stream failed: %s", apiErr.Detail())})
-			} else {
-				send(&sdk.ErrorPart{Error: fmt.Errorf("openai-responses: stream failed: %w", err)})
-			}
+			send(&sdk.ErrorPart{Error: fmt.Errorf("openai-responses: stream failed: %w", err)})
 		}
 
 		flush()
