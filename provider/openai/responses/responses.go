@@ -108,7 +108,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	return models, nil
 }
 
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
+func (p *Provider) Test(ctx context.Context) error {
 	_, err := utils.FetchJSON[modelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
 		Method:      http.MethodGet,
 		BaseURL:     p.baseURL,
@@ -120,9 +120,9 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
-		return classifyError(err)
+		return fmt.Errorf("openai-responses: test request failed: %w", err)
 	}
-	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
+	return nil
 }
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
@@ -143,7 +143,7 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 		return nil, fmt.Errorf("openai-responses: test model request failed: %w", err)
 	}
 
-	status, probeErr := utils.ProbeStatus(ctx, p.httpClient, &utils.RequestOptions{
+	probeErr := utils.Probe(ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
 		Path:    "/responses",
@@ -154,11 +154,14 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 			"input":             "hi",
 			"max_output_tokens": 1,
 		},
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
-	if probeErr != nil {
-		return nil, fmt.Errorf("openai-responses: probe model request failed: %w", probeErr)
+	result, err := sdk.ClassifyProbe(probeErr)
+	if err != nil {
+		return nil, fmt.Errorf("openai-responses: probe model request failed: %w", err)
 	}
-	return sdk.ClassifyProbeStatus(status)
+	return result, nil
 }
 
 func (p *Provider) ChatModel(id string) *sdk.Model {

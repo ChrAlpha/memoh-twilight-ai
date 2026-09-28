@@ -91,12 +91,9 @@ func (p *Provider) ListModels(context.Context) ([]sdk.Model, error) {
 	return out, nil
 }
 
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
+func (p *Provider) Test(ctx context.Context) error {
 	_, err := p.TestModel(ctx, Catalog()[0].ID)
-	if err != nil {
-		return classifyError(err)
-	}
-	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
+	return err
 }
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
@@ -110,17 +107,20 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 	}
 	req.Stream = false
 
-	status, err := utils.ProbeStatus(ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/codex/responses",
-		Headers: p.requestHeaders(ctx),
-		Body:    req,
+	probeErr := utils.Probe(ctx, p.httpClient, &utils.RequestOptions{
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/codex/responses",
+		Headers:     p.requestHeaders(ctx),
+		Body:        req,
+		Provider:    p.Name(),
+		DecodeError: decodeError,
 	})
+	result, err := sdk.ClassifyProbe(probeErr)
 	if err != nil {
 		return nil, fmt.Errorf("openai-codex: probe model request failed: %w", err)
 	}
-	return sdk.ClassifyProbeStatus(status)
+	return result, nil
 }
 
 func (p *Provider) ChatModel(id string) *sdk.Model {

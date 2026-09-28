@@ -52,6 +52,11 @@ func New(options ...Option) *Provider {
 	return p
 }
 
+// Name returns the provider name used in APIError.Provider.
+func (p *Provider) Name() string {
+	return providerName
+}
+
 func (p *Provider) VideoModel(id string) *sdk.VideoModel {
 	return &sdk.VideoModel{ID: id, Provider: p}
 }
@@ -198,8 +203,7 @@ func (p *Provider) DoDownload(ctx context.Context, _ *sdk.VideoModel, output sdk
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, "", fmt.Errorf("openrouter videos: download failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, "", fmt.Errorf("openrouter videos: download failed: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeOpenRouter))
 	}
 	data, err = io.ReadAll(resp.Body)
 	if err != nil {
@@ -229,9 +233,9 @@ func toVideoJob(resp *videoResponse, modelID string) *sdk.VideoJob {
 	switch {
 	case strings.EqualFold(strings.TrimSpace(resp.Status), "expired"):
 		// The status is kept as Code so an expired job can be told from a failed one.
-		job.Error = &sdk.VideoError{Code: "expired", Message: resp.Error}
+		job.Error = &sdk.VideoError{Code: "expired", Message: resp.Error, Kind: sdk.KindUnknown}
 	case resp.Error != "":
-		job.Error = &sdk.VideoError{Message: resp.Error}
+		job.Error = &sdk.VideoError{Message: resp.Error, Kind: sdk.KindUnknown}
 	}
 	for _, url := range resp.UnsignedURLs {
 		if strings.TrimSpace(url) == "" {

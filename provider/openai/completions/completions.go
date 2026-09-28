@@ -160,7 +160,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	return models, nil
 }
 
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
+func (p *Provider) Test(ctx context.Context) error {
 	_, err := utils.FetchJSON[modelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
 		Method:      http.MethodGet,
 		BaseURL:     p.baseURL,
@@ -172,9 +172,9 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
-		return classifyError(err)
+		return fmt.Errorf("openai: test request failed: %w", err)
 	}
-	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
+	return nil
 }
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
@@ -197,7 +197,7 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 
 	// GET /models/{id} returned 404 — fall back to a minimal generation
 	// request for providers that don't implement the models listing API.
-	status, probeErr := utils.ProbeStatus(ctx, p.httpClient, &utils.RequestOptions{
+	probeErr := utils.Probe(ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
 		Path:    "/chat/completions",
@@ -208,11 +208,14 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 			"messages":   []map[string]string{{"role": "user", "content": "hi"}},
 			"max_tokens": 1,
 		},
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
-	if probeErr != nil {
-		return nil, fmt.Errorf("openai: probe model request failed: %w", probeErr)
+	result, err := sdk.ClassifyProbe(probeErr)
+	if err != nil {
+		return nil, fmt.Errorf("openai: probe model request failed: %w", err)
 	}
-	return sdk.ClassifyProbeStatus(status)
+	return result, nil
 }
 
 // ChatModel creates a Model bound to this provider.
@@ -769,28 +772,5 @@ func mapFinishReason(reason string) sdk.FinishReason {
 		return sdk.FinishReasonToolCalls
 	default:
 		return sdk.FinishReasonUnknown
-	}
-}
-
-func classifyError(err error) *sdk.ProviderTestResult {
-	var apiErr *sdk.APIError
-	if errors.As(err, &apiErr) {
-		if apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden {
-			return &sdk.ProviderTestResult{
-				Status:  sdk.ProviderStatusUnhealthy,
-				Message: fmt.Sprintf("authentication failed: %s", apiErr.Message),
-				Error:   err,
-			}
-		}
-		return &sdk.ProviderTestResult{
-			Status:  sdk.ProviderStatusUnhealthy,
-			Message: fmt.Sprintf("service error (%d): %s", apiErr.StatusCode, apiErr.Message),
-			Error:   err,
-		}
-	}
-	return &sdk.ProviderTestResult{
-		Status:  sdk.ProviderStatusUnreachable,
-		Message: fmt.Sprintf("connection failed: %s", err.Error()),
-		Error:   err,
 	}
 }

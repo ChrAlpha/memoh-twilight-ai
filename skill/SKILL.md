@@ -82,7 +82,7 @@ If adding or changing a chat provider, preserve the `sdk.Provider` contract:
 
 - `Name()`
 - `ListModels(ctx)`
-- `Test(ctx)`
+- `Test(ctx) error` (nil when healthy; a rejection is a `*sdk.APIError`, transport errors wrap with `%w`)
 - `TestModel(ctx, modelID)`
 - `DoGenerate(ctx, req sdk.Request) (sdk.ModelResult, error)`
 - `DoStream(ctx, req sdk.Request) (<-chan sdk.StreamPart, error)`

@@ -154,7 +154,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	return models, nil
 }
 
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
+func (p *Provider) Test(ctx context.Context) error {
 	_, err := utils.FetchJSON[googleModelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
 		Method:      http.MethodGet,
 		BaseURL:     p.baseURL,
@@ -165,9 +165,9 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 		DecodeError: errorformat.DecodeGoogle,
 	})
 	if err != nil {
-		return classifyError(err)
+		return fmt.Errorf("google: test request failed: %w", err)
 	}
-	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
+	return nil
 }
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
@@ -188,7 +188,7 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 		return nil, fmt.Errorf("google: test model request failed: %w", err)
 	}
 
-	status, probeErr := utils.ProbeStatus(ctx, p.httpClient, &utils.RequestOptions{
+	probeErr := utils.Probe(ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
 		Path:    "/" + modelPath + ":generateContent",
@@ -197,11 +197,14 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 			"contents":         []map[string]any{{"parts": []map[string]string{{"text": "hi"}}}},
 			"generationConfig": map[string]int{"maxOutputTokens": 1},
 		},
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeGoogle,
 	})
-	if probeErr != nil {
-		return nil, fmt.Errorf("google: probe model request failed: %w", probeErr)
+	result, err := sdk.ClassifyProbe(probeErr)
+	if err != nil {
+		return nil, fmt.Errorf("google: probe model request failed: %w", err)
 	}
-	return sdk.ClassifyProbeStatus(status)
+	return result, nil
 }
 
 func (p *Provider) ChatModel(id string) *sdk.Model {
@@ -923,29 +926,6 @@ func functionResponseContent(out sdk.ToolOutput) any {
 		return out.JSON
 	}
 	return out.Text
-}
-
-func classifyError(err error) *sdk.ProviderTestResult {
-	var apiErr *sdk.APIError
-	if errors.As(err, &apiErr) {
-		if apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden {
-			return &sdk.ProviderTestResult{
-				Status:  sdk.ProviderStatusUnhealthy,
-				Message: fmt.Sprintf("authentication failed: %s", apiErr.Message),
-				Error:   err,
-			}
-		}
-		return &sdk.ProviderTestResult{
-			Status:  sdk.ProviderStatusUnhealthy,
-			Message: fmt.Sprintf("service error (%d): %s", apiErr.StatusCode, apiErr.Message),
-			Error:   err,
-		}
-	}
-	return &sdk.ProviderTestResult{
-		Status:  sdk.ProviderStatusUnreachable,
-		Message: fmt.Sprintf("connection failed: %s", err.Error()),
-		Error:   err,
-	}
 }
 
 func parseDataURI(uri string) (mediaType, data string) {

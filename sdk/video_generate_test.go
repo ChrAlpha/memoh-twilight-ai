@@ -68,8 +68,31 @@ func TestGenerateVideoTimeout(t *testing.T) {
 		WithVideoPollInterval(time.Millisecond),
 		WithVideoPollTimeout(3*time.Millisecond),
 	)
-	if err == nil || !strings.Contains(err.Error(), "timed out") {
-		t.Fatalf("expected timeout error, got %v", err)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected an error wrapping context.DeadlineExceeded, got %v", err)
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		t.Fatalf("a poll timeout is not a provider failure, got APIError %+v", apiErr)
+	}
+}
+
+func TestGenerateVideoCanceled(t *testing.T) {
+	prov := &fakeVideoProvider{
+		createJob: &VideoJob{ID: "job-1", Status: VideoJobQueued},
+		getJobs:   []*VideoJob{{ID: "job-1", Status: VideoJobRunning}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := GenerateVideo(ctx,
+		WithVideoModel(testVideoModel(prov)),
+		WithVideoPrompt("make a clip"),
+		WithVideoPollInterval(time.Hour),
+		WithVideoPollTimeout(time.Hour),
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected an error wrapping context.Canceled, got %v", err)
 	}
 }
 
@@ -77,7 +100,7 @@ func TestGenerateVideoFailedStatus(t *testing.T) {
 	prov := &fakeVideoProvider{
 		createJob: &VideoJob{ID: "job-1", Status: VideoJobQueued},
 		getJobs: []*VideoJob{
-			{ID: "job-1", Status: VideoJobFailed, Error: &VideoError{Message: "blocked"}},
+			{ID: "job-1", Status: VideoJobFailed, Error: &VideoError{Code: "QuotaExceeded", Message: "blocked", Kind: KindQuotaExhausted}},
 		},
 	}
 
@@ -90,8 +113,55 @@ func TestGenerateVideoFailedStatus(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "blocked") {
 		t.Fatalf("expected failed status error, got %v", err)
 	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %T %v", err, err)
+	}
+	if apiErr.Provider != "fake-videos" || apiErr.StatusCode != 0 || apiErr.Code != "QuotaExceeded" ||
+		apiErr.Message != "blocked" || apiErr.Kind != KindQuotaExhausted {
+		t.Fatalf("APIError = %+v, want provider fake-videos, status 0, code QuotaExceeded, message blocked, kind quota_exhausted", apiErr)
+	}
 	if result == nil || result.Job.Status != VideoJobFailed {
 		t.Fatalf("expected failed result, got %#v", result)
+	}
+}
+
+func TestGenerateVideoFailedWithoutPayload(t *testing.T) {
+	prov := &fakeVideoProvider{
+		createJob: &VideoJob{ID: "job-1", Status: VideoJobQueued},
+		getJobs:   []*VideoJob{{ID: "job-1", Status: VideoJobFailed}},
+	}
+
+	_, err := GenerateVideo(context.Background(),
+		WithVideoModel(testVideoModel(prov)),
+		WithVideoPrompt("make a clip"),
+		WithVideoPollInterval(time.Millisecond),
+		WithVideoPollTimeout(time.Second),
+	)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %T %v", err, err)
+	}
+	if apiErr.StatusCode != 0 || apiErr.Kind != KindUnknown {
+		t.Fatalf("APIError = %+v, want status 0 and kind unknown", apiErr)
+	}
+}
+
+func TestGenerateVideoCanceledStatusIsNotAPIError(t *testing.T) {
+	prov := &fakeVideoProvider{
+		createJob: &VideoJob{ID: "job-1", Status: VideoJobQueued},
+		getJobs:   []*VideoJob{{ID: "job-1", Status: VideoJobCanceled}},
+	}
+
+	_, err := GenerateVideo(context.Background(),
+		WithVideoModel(testVideoModel(prov)),
+		WithVideoPrompt("make a clip"),
+		WithVideoPollInterval(time.Millisecond),
+		WithVideoPollTimeout(time.Second),
+	)
+	var apiErr *APIError
+	if err == nil || errors.As(err, &apiErr) {
+		t.Fatalf("expected a plain error for a canceled job, got %v", err)
 	}
 }
 
@@ -105,6 +175,8 @@ type fakeVideoProvider struct {
 	getCalls     int
 	downloadData []byte
 }
+
+func (p *fakeVideoProvider) Name() string { return "fake-videos" }
 
 func (p *fakeVideoProvider) ListModels(context.Context) ([]*VideoModel, error) {
 	return nil, nil

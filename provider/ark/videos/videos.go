@@ -48,6 +48,11 @@ func New(options ...Option) *Provider {
 	return p
 }
 
+// Name returns the provider name used in APIError.Provider.
+func (p *Provider) Name() string {
+	return providerName
+}
+
 func (p *Provider) VideoModel(id string) *sdk.VideoModel {
 	return &sdk.VideoModel{ID: id, Provider: p}
 }
@@ -134,8 +139,7 @@ func (p *Provider) DoDownload(ctx context.Context, _ *sdk.VideoModel, output sdk
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, "", fmt.Errorf("ark videos: download failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, "", fmt.Errorf("ark videos: download failed: %w", utils.NewHTTPError(providerName, resp, decodeError))
 	}
 	data, err = io.ReadAll(resp.Body)
 	if err != nil {
@@ -241,9 +245,7 @@ func toVideoJob(raw map[string]any, fallbackModelID string) *sdk.VideoJob {
 		Progress:         progress,
 		ProviderMetadata: sdk.NewProviderMetadata("ark", sdk.StringValues(raw)),
 	}
-	if errMsg := extractError(inner); errMsg != "" {
-		job.Error = &sdk.VideoError{Message: errMsg}
-	}
+	job.Error = extractError(inner)
 	for _, url := range extractVideoURLs(inner) {
 		job.Outputs = append(job.Outputs, sdk.VideoOutput{
 			URL:              url,
@@ -315,19 +317,25 @@ func firstFloat(obj map[string]any, keys ...string) *float64 {
 	return nil
 }
 
-func extractError(obj map[string]any) string {
-	if s, ok := obj["error"].(string); ok {
-		return s
+// extractError reads a failed task's error: {"error":{"code":"...","message":"..."}},
+// a bare error string, or a top-level message on a failed task. It returns nil
+// when the task carries none.
+func extractError(obj map[string]any) *sdk.VideoError {
+	var code, message string
+	switch e := obj["error"].(type) {
+	case string:
+		message = e
+	case map[string]any:
+		code = firstString(e, "code")
+		message = firstString(e, "message")
 	}
-	if m, ok := obj["error"].(map[string]any); ok {
-		if s, ok := m["message"].(string); ok {
-			return s
-		}
+	if code == "" && message == "" && mapStatus(firstString(obj, "status")) == sdk.VideoJobFailed {
+		message = firstString(obj, "message")
 	}
-	if s, ok := obj["message"].(string); ok && mapStatus(firstString(obj, "status")) == sdk.VideoJobFailed {
-		return s
+	if code == "" && message == "" {
+		return nil
 	}
-	return ""
+	return &sdk.VideoError{Code: code, Message: message, Kind: kindFor(code)}
 }
 
 func extractVideoURLs(v any) []string {

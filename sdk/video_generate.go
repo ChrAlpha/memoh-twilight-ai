@@ -169,6 +169,12 @@ func (c *Client) DownloadVideo(ctx context.Context, model *VideoModel, output Vi
 
 // GenerateVideo starts a job, waits for it by default, and optionally downloads
 // the first output when WithVideoDownload(true) is set.
+//
+// A job that ends in VideoJobFailed returns the result, with its Job, together
+// with a *APIError whose StatusCode is 0 and whose Code, Message and Kind come
+// from the job's VideoError. When the job does not finish within the poll
+// timeout or ctx ends first, the returned error wraps the context's error, so
+// errors.Is(err, context.DeadlineExceeded) or context.Canceled holds.
 func (c *Client) GenerateVideo(ctx context.Context, options ...VideoOption) (*VideoResult, error) {
 	cfg, prov, err := buildVideoConfig(options)
 	if err != nil {
@@ -193,7 +199,7 @@ func (c *Client) GenerateVideo(ctx context.Context, options ...VideoOption) (*Vi
 	for job == nil || !job.Status.Terminal() {
 		select {
 		case <-waitCtx.Done():
-			return nil, fmt.Errorf("twilightai: video generation timed out after %s", cfg.PollTimeout)
+			return nil, fmt.Errorf("twilightai: waiting for video job (poll timeout %s): %w", cfg.PollTimeout, waitCtx.Err())
 		case <-ticker.C:
 			if job == nil || job.ID == "" {
 				return nil, fmt.Errorf("twilightai: video provider returned empty job id")
@@ -206,10 +212,10 @@ func (c *Client) GenerateVideo(ctx context.Context, options ...VideoOption) (*Vi
 		}
 	}
 
+	if job.Status == VideoJobFailed {
+		return result, videoJobError(prov.Name(), job.Error)
+	}
 	if job.Status != VideoJobSucceeded {
-		if job.Error != nil && job.Error.Message != "" {
-			return result, fmt.Errorf("twilightai: video generation failed: %s", job.Error.Message)
-		}
 		return result, fmt.Errorf("twilightai: video generation finished with status %s", job.Status)
 	}
 	if len(job.Outputs) > 0 {
@@ -225,6 +231,19 @@ func (c *Client) GenerateVideo(ctx context.Context, options ...VideoOption) (*Vi
 		result.ContentType = contentType
 	}
 	return result, nil
+}
+
+// videoJobError reports a failed job as the provider-reported failure it is.
+func videoJobError(provider string, jobErr *VideoError) *APIError {
+	e := &APIError{Provider: provider, Kind: KindUnknown}
+	if jobErr != nil {
+		e.Code = jobErr.Code
+		e.Message = jobErr.Message
+		if jobErr.Kind != "" {
+			e.Kind = jobErr.Kind
+		}
+	}
+	return e
 }
 
 func videoProviderFromModel(model *VideoModel) (VideoProvider, error) {

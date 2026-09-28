@@ -47,7 +47,7 @@ See [Custom HTTP Headers](providers.md#custom-http-headers) for usage.
 type Provider interface {
     Name() string
     ListModels(ctx context.Context) ([]Model, error)
-    Test(ctx context.Context) *ProviderTestResult
+    Test(ctx context.Context) error
     TestModel(ctx context.Context, modelID string) (*ModelTestResult, error)
     DoGenerate(ctx context.Context, req Request) (ModelResult, error)
     DoStream(ctx context.Context, req Request) (<-chan StreamPart, error)
@@ -58,30 +58,21 @@ type Provider interface {
 |--------|---------|
 | `Name()` | Returns a provider identifier (e.g. `"openai-completions"`) |
 | `ListModels(ctx)` | Fetches available models from the backend API |
-| `Test(ctx)` | Health check: returns OK, Unhealthy, or Unreachable |
+| `Test(ctx)` | Health check: `nil` when the provider is reachable and accepts the credentials, a `*APIError` when it rejected the check, any other error when it was not reached |
 | `TestModel(ctx, id)` | Checks if a specific model ID is supported |
 | `DoGenerate(ctx, req)` | Performs one non-streaming model call |
 | `DoStream(ctx, req)` | Performs one streaming model call |
 
-#### ProviderStatus
+A rejected credential is a `*APIError` whose `Kind` is `KindAuthentication` or `KindPermissionDenied`:
 
 ```go
-type ProviderStatus string
-
-const (
-    ProviderStatusOK          ProviderStatus = "ok"          // Connected and healthy
-    ProviderStatusUnhealthy   ProviderStatus = "unhealthy"   // Connected but health check failed
-    ProviderStatusUnreachable ProviderStatus = "unreachable" // Cannot connect
-)
-```
-
-#### ProviderTestResult
-
-```go
-type ProviderTestResult struct {
-    Status  ProviderStatus
-    Message string
-    Error   error
+if err := provider.Test(ctx); err != nil {
+    switch sdk.KindOf(err) {
+    case sdk.KindAuthentication, sdk.KindPermissionDenied:
+        // the key is wrong or lacks access
+    default:
+        // unreachable, or the provider failed the check for another reason
+    }
 }
 ```
 
@@ -93,6 +84,14 @@ type ModelTestResult struct {
     Message   string
 }
 ```
+
+#### ClassifyProbe
+
+```go
+func ClassifyProbe(err error) (*ModelTestResult, error)
+```
+
+Maps the outcome of a minimal generation request, for providers whose `TestModel` falls back to one when `GET /models/{id}` is unavailable. `err` is nil for a 2xx, a `*APIError` for any other status, or the transport error. A 2xx, 400, 422 or 429 returns `Supported: true`; a 404 returns `Supported: false`; anything else returns `err` unchanged, so a 401 or 403 stays a `*APIError`.
 
 ### Model
 
@@ -1225,7 +1224,7 @@ assistant history for later tool-call turns.
 func (p *Provider) Name() string                  // "openai-completions"
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
 func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
@@ -1268,7 +1267,7 @@ func WithHeaders(headers map[string]string) Option
 func (p *Provider) Name() string                  // "openai-responses"
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
 func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
@@ -1382,7 +1381,7 @@ func WithHeaders(headers map[string]string) Option
 func (p *Provider) Name() string                  // "openai-codex"
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
 func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
@@ -1451,7 +1450,7 @@ func (p *Provider) Name() string // "opencode-go"
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) ProtocolForModel(id string) (Protocol, error)
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
 func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)

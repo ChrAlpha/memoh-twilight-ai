@@ -8,7 +8,7 @@ A **Provider** is the abstraction that connects the SDK to an AI backend. It han
 type Provider interface {
     Name() string
     ListModels(ctx context.Context) ([]Model, error)
-    Test(ctx context.Context) *ProviderTestResult
+    Test(ctx context.Context) error
     TestModel(ctx context.Context, modelID string) (*ModelTestResult, error)
     DoGenerate(ctx context.Context, req Request) (ModelResult, error)
     DoStream(ctx context.Context, req Request) (<-chan StreamPart, error)
@@ -19,7 +19,7 @@ type Provider interface {
 |--------|---------|
 | `Name()` | Returns a human-readable provider identifier (e.g. `"openai-completions"`) |
 | `ListModels(ctx)` | Fetches available models from the backend API |
-| `Test(ctx)` | Health check returning one of three states (see below) |
+| `Test(ctx)` | Health check; `nil` means reachable with valid credentials (see below) |
 | `TestModel(ctx, id)` | Checks whether a specific model ID is supported |
 | `DoGenerate()` | Performs one non-streaming model call and returns the single result |
 | `DoStream()` | Performs one streaming model call, returning a channel of `StreamPart` it must close |
@@ -51,18 +51,20 @@ type Model struct {
 
 ### Provider Health Check
 
-`Test(ctx)` returns a `*ProviderTestResult` with one of three statuses:
+`Test(ctx)` returns an error:
 
-| Status | Meaning |
+| Result | Meaning |
 |--------|---------|
-| `ProviderStatusOK` | The provider's check succeeded; public discovery endpoints only establish reachability |
-| `ProviderStatusUnhealthy` | TCP connection succeeded but API returned an error (e.g. 401/403 auth failure) |
-| `ProviderStatusUnreachable` | Cannot establish a network connection to the endpoint |
+| `nil` | The provider's check succeeded. It needs valid credentials, except where the provider checks a public endpoint (OpenCode Go), which only establishes reachability |
+| `*sdk.APIError` in the chain | The provider answered and rejected the check. `Kind` is `KindAuthentication` or `KindPermissionDenied` for a rejected key |
+| Any other error | The endpoint was not reached (DNS, TLS, connection refused, context ended) |
 
 ```go
-result := provider.Test(ctx)
-if result.Status != sdk.ProviderStatusOK {
-    log.Fatalf("provider issue: %s (error: %v)", result.Message, result.Error)
+if err := provider.Test(ctx); err != nil {
+    if kind := sdk.KindOf(err); kind == sdk.KindAuthentication || kind == sdk.KindPermissionDenied {
+        log.Fatalf("credentials rejected: %v", err)
+    }
+    log.Fatalf("provider issue: %v", err)
 }
 ```
 
@@ -1605,17 +1607,11 @@ func (p *MyProvider) ListModels(ctx context.Context) ([]sdk.Model, error) {
     }, nil
 }
 
-func (p *MyProvider) Test(ctx context.Context) *sdk.ProviderTestResult {
-    // Try a lightweight API call to verify connectivity
+func (p *MyProvider) Test(ctx context.Context) error {
+    // Try a lightweight authenticated call. Return the backend's rejection as
+    // a *sdk.APIError (with Kind set) and wrap transport errors with %w.
     _, err := p.ListModels(ctx)
-    if err != nil {
-        return &sdk.ProviderTestResult{
-            Status:  sdk.ProviderStatusUnreachable,
-            Message: err.Error(),
-            Error:   err,
-        }
-    }
-    return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
+    return err
 }
 
 func (p *MyProvider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {

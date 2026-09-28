@@ -68,30 +68,24 @@ See [Custom HTTP Headers](../docs/providers.md#custom-http-headers) for usage.
 type Provider interface {
     Name() string
     ListModels(ctx context.Context) ([]Model, error)
-    Test(ctx context.Context) *ProviderTestResult
+    // Test returns nil when the provider is reachable and accepts the
+    // credentials, a *APIError (Kind set) when it rejected the check, and any
+    // other error when it was not reached.
+    Test(ctx context.Context) error
     TestModel(ctx context.Context, modelID string) (*ModelTestResult, error)
     DoGenerate(ctx context.Context, req Request) (ModelResult, error)
     DoStream(ctx context.Context, req Request) (<-chan StreamPart, error)
-}
-
-type ProviderStatus string
-
-const (
-    ProviderStatusOK          ProviderStatus = "ok"
-    ProviderStatusUnhealthy   ProviderStatus = "unhealthy"
-    ProviderStatusUnreachable ProviderStatus = "unreachable"
-)
-
-type ProviderTestResult struct {
-    Status  ProviderStatus
-    Message string
-    Error   error
 }
 
 type ModelTestResult struct {
     Supported bool
     Message   string
 }
+
+// ClassifyProbe maps a probe request's error (nil for 2xx, *APIError
+// otherwise) to a ModelTestResult: 2xx/400/422/429 supported, 404 not found,
+// anything else returned unchanged.
+func ClassifyProbe(err error) (*ModelTestResult, error)
 ```
 
 ### Models
@@ -717,7 +711,7 @@ func New(options ...Option) *Provider
 
 func (p *Provider) Name() string
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
@@ -755,7 +749,7 @@ func New(options ...Option) *Provider
 
 func (p *Provider) Name() string
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
@@ -811,7 +805,7 @@ func New(options ...Option) *Provider
 
 func (p *Provider) Name() string
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
@@ -865,7 +859,7 @@ func New(options ...Option) *Provider
 
 func (p *Provider) Name() string
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
@@ -908,7 +902,7 @@ func New(options ...Option) *Provider
 
 func (p *Provider) Name() string
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
@@ -1076,7 +1070,7 @@ func (p *Provider) Name() string // "opencode-go"
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) ProtocolForModel(id string) (Protocol, error)
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
 func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)

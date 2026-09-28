@@ -1704,9 +1704,8 @@ func TestProviderTest_OK(t *testing.T) {
 		messages.WithBaseURL(srv.URL),
 	)
 
-	result := p.Test(context.Background())
-	if result.Status != sdk.ProviderStatusOK {
-		t.Errorf("expected status OK, got %q", result.Status)
+	if err := p.Test(context.Background()); err != nil {
+		t.Errorf("Test() = %v, want nil", err)
 	}
 }
 
@@ -1722,9 +1721,9 @@ func TestProviderTest_Unhealthy(t *testing.T) {
 		messages.WithBaseURL(srv.URL),
 	)
 
-	result := p.Test(context.Background())
-	if result.Status != sdk.ProviderStatusUnhealthy {
-		t.Errorf("expected status Unhealthy, got %q", result.Status)
+	err := p.Test(context.Background())
+	if kind := sdk.KindOf(err); kind != sdk.KindAuthentication {
+		t.Errorf("KindOf(Test()) = %q, want %q (err %v)", kind, sdk.KindAuthentication, err)
 	}
 }
 
@@ -1734,9 +1733,9 @@ func TestProviderTest_Unreachable(t *testing.T) {
 		messages.WithBaseURL("http://127.0.0.1:1"),
 	)
 
-	result := p.Test(context.Background())
-	if result.Status != sdk.ProviderStatusUnreachable {
-		t.Errorf("expected status Unreachable, got %q", result.Status)
+	err := p.Test(context.Background())
+	if err == nil || sdk.KindOf(err) != sdk.KindUnknown {
+		t.Errorf("Test() = %v, want a transport error with no APIError Kind", err)
 	}
 }
 

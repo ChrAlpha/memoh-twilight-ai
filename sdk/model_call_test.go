@@ -14,9 +14,7 @@ type boundaryProvider struct {
 
 func (p boundaryProvider) Name() string                                { return "boundary" }
 func (p boundaryProvider) ListModels(context.Context) ([]Model, error) { return nil, nil }
-func (p boundaryProvider) Test(context.Context) *ProviderTestResult {
-	return &ProviderTestResult{Status: ProviderStatusOK}
-}
+func (p boundaryProvider) Test(context.Context) error                  { return nil }
 func (p boundaryProvider) TestModel(context.Context, string) (*ModelTestResult, error) {
 	return &ModelTestResult{Supported: true}, nil
 }

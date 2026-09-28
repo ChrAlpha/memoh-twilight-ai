@@ -219,9 +219,8 @@ func TestDiscoveryAndProbes(t *testing.T) {
 			t.Error("discovered model not bound to Go provider")
 		}
 	}
-	status := p.Test(context.Background())
-	if status.Status != sdk.ProviderStatusOK || !strings.Contains(status.Message, "TestModel") {
-		t.Fatalf("public catalog test = %+v", status)
+	if err := p.Test(context.Background()); err != nil {
+		t.Fatalf("public catalog test = %v", err)
 	}
 	if _, err := p.TestModel(context.Background(), "glm-5.2"); err == nil {
 		t.Fatal("rejected session was treated as a working model")

@@ -3,7 +3,6 @@ package copilot
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -95,12 +94,9 @@ func (p *Provider) ListModels(context.Context) ([]sdk.Model, error) {
 	return out, nil
 }
 
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
+func (p *Provider) Test(ctx context.Context) error {
 	_, err := p.TestModel(ctx, AutoModel)
-	if err != nil {
-		return classifyError(err)
-	}
-	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
+	return err
 }
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
@@ -112,17 +108,20 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 		return nil, fmt.Errorf("github-copilot: build probe request: %w", err)
 	}
 
-	status, err := utils.ProbeStatus(ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/chat/completions",
-		Headers: p.requestHeaders(ctx),
-		Body:    req,
+	probeErr := utils.Probe(ctx, p.httpClient, &utils.RequestOptions{
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/chat/completions",
+		Headers:     p.requestHeaders(ctx),
+		Body:        req,
+		Provider:    p.Name(),
+		DecodeError: decodeError,
 	})
+	result, err := sdk.ClassifyProbe(probeErr)
 	if err != nil {
 		return nil, fmt.Errorf("github-copilot: probe model request failed: %w", err)
 	}
-	return sdk.ClassifyProbeStatus(status)
+	return result, nil
 }
 
 func (p *Provider) ChatModel(id string) *sdk.Model {
@@ -558,29 +557,6 @@ func mapFinishReason(reason string) sdk.FinishReason {
 		return sdk.FinishReasonToolCalls
 	default:
 		return sdk.FinishReasonUnknown
-	}
-}
-
-func classifyError(err error) *sdk.ProviderTestResult {
-	var apiErr *sdk.APIError
-	if errors.As(err, &apiErr) {
-		if apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden {
-			return &sdk.ProviderTestResult{
-				Status:  sdk.ProviderStatusUnhealthy,
-				Message: fmt.Sprintf("authentication failed: %s", apiErr.Message),
-				Error:   err,
-			}
-		}
-		return &sdk.ProviderTestResult{
-			Status:  sdk.ProviderStatusUnhealthy,
-			Message: fmt.Sprintf("service error (%d): %s", apiErr.StatusCode, apiErr.Message),
-			Error:   err,
-		}
-	}
-	return &sdk.ProviderTestResult{
-		Status:  sdk.ProviderStatusUnreachable,
-		Message: fmt.Sprintf("connection failed: %s", err.Error()),
-		Error:   err,
 	}
 }
 

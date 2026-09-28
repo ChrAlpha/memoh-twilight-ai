@@ -1,6 +1,7 @@
 // Package providertest is the seam conformance suite for chat providers.
 //
-// It reaches a provider only through sdk.Generate and sdk.Stream, so the same
+// It reaches a provider through sdk.Generate and sdk.Stream, plus Provider.Test
+// for the health check, so the same
 // fixtures keep working when the provider interface underneath changes: the
 // suite asserts behavior, not method signatures. A provider package supplies a
 // Fixture -- how to construct the provider against a test server, plus replies
@@ -116,6 +117,8 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("in-band error", func(t *testing.T) { testInBandError(t, factory(t)) })
 	t.Run("incomplete stream", func(t *testing.T) { testStreamIncomplete(t, factory(t)) })
 	t.Run("malformed stream", func(t *testing.T) { testStreamMalformed(t, factory(t)) })
+	t.Run("health", func(t *testing.T) { testHealth(t, factory(t)) })
+	t.Run("model probe", func(t *testing.T) { testModelProbe(t, factory(t)) })
 }
 
 // The markers travel through the Request untouched and must come out of the
