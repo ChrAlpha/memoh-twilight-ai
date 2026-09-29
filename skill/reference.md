@@ -62,6 +62,19 @@ Precedence: protocol defaults, provider `WithHeaders`, request-context headers.
 Required SSE headers, multipart boundaries and AWS signing are applied last.
 See [Custom HTTP Headers](../docs/providers.md#custom-http-headers) for usage.
 
+```go
+func WithClientRequestID(ctx context.Context, id string) context.Context
+```
+
+Returns a child context that sends `id` with each provider request made with it,
+so the provider can find a request that failed without a response. The OpenAI
+providers except Codex send `X-Client-Request-Id`, as do OpenCode Go (for models
+routed to Completions or Responses) and Ark video; GitHub Copilot sends
+`X-Request-Id`. Other providers do not send it. It overrides a request-context
+header of the same name; an empty `id` clears an inherited one. Use a new ID for
+every call. `GenerateVideo` sends it only with the create request. See
+[Client Request ID](../docs/providers.md#client-request-id).
+
 ### Provider Contracts
 
 ```go

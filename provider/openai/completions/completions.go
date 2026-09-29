@@ -648,7 +648,8 @@ func (p *Provider) requestHeaders(ctx context.Context) map[string]string {
 	if p.prepareRequest == nil && p.apiKey != "" {
 		defaults = utils.AuthHeader(p.apiKey)
 	}
-	return utils.RequestHeaders(ctx, defaults, p.headers)
+	headers := utils.RequestHeaders(ctx, defaults, p.headers)
+	return utils.AddClientRequestID(ctx, headers, utils.ClientRequestIDHeader)
 }
 
 // streamingToolCall accumulates one function call's argument deltas. args

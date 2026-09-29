@@ -134,6 +134,38 @@ derived for your own tool code. For that reason, keep credentials such as
 a context header overrides the API key of every provider that receives it. Other
 provider packages may ignore request-context headers.
 
+### Client Request ID
+
+`sdk.WithClientRequestID(ctx, id)` sends an ID you choose with each provider
+request made with the context. A provider that records it can find a request that
+failed without a response, such as one that timed out; log the ID with the call
+and quote it in support requests.
+
+```go
+id := uuid.NewString()
+ctx := sdk.WithClientRequestID(conversationCtx, id)
+result, err := model.Generate(ctx, req)
+if err != nil {
+    log.Printf("generate failed (client request id %s): %v", id, err)
+}
+```
+
+| Provider | Header |
+|---|---|
+| OpenAI Completions, Responses, embeddings, images, speech and transcription | `X-Client-Request-Id` |
+| OpenCode Go, for models routed to Completions or Responses | `X-Client-Request-Id` |
+| Ark video | `X-Client-Request-Id` |
+| GitHub Copilot | `X-Request-Id` |
+
+Other providers, including Codex, do not send it. The OpenAI packages send it to
+whichever endpoint they are configured for. It overrides a header of the same
+name set with `sdk.WithRequestHeaders`, and an empty ID clears an inherited one.
+
+OpenAI expects a unique ID per request, of at most 512 ASCII characters. Derive a
+context with a new ID for every call; a context shared by a conversation would
+send the same ID with every call made with it. `GenerateVideo` sends the ID only
+with the request that creates the job, not with polling or the download.
+
 ## OpenAI Completions Provider
 
 The `provider/openai/completions` package provides an implementation for the OpenAI Chat Completions API (`/chat/completions`).

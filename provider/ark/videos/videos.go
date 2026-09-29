@@ -71,7 +71,7 @@ func (p *Provider) DoCreate(ctx context.Context, params sdk.VideoParams) (*sdk.V
 		Method:      http.MethodPost,
 		BaseURL:     p.baseURL,
 		Path:        "/contents/generations/tasks",
-		Headers:     utils.AuthHeader(p.apiKey),
+		Headers:     p.requestHeaders(ctx),
 		Body:        body,
 		Provider:    providerName,
 		DecodeError: decodeError,
@@ -87,7 +87,7 @@ func (p *Provider) DoGet(ctx context.Context, model *sdk.VideoModel, id string) 
 		Method:      http.MethodGet,
 		BaseURL:     p.baseURL,
 		Path:        "/contents/generations/tasks/" + id,
-		Headers:     utils.AuthHeader(p.apiKey),
+		Headers:     p.requestHeaders(ctx),
 		Provider:    providerName,
 		DecodeError: decodeError,
 	})
@@ -106,7 +106,7 @@ func (p *Provider) DoCancel(ctx context.Context, _ *sdk.VideoModel, id string) e
 		Method:      http.MethodDelete,
 		BaseURL:     p.baseURL,
 		Path:        "/contents/generations/tasks/" + id,
-		Headers:     utils.AuthHeader(p.apiKey),
+		Headers:     p.requestHeaders(ctx),
 		Provider:    providerName,
 		DecodeError: decodeError,
 	})
@@ -115,6 +115,10 @@ func (p *Provider) DoCancel(ctx context.Context, _ *sdk.VideoModel, id string) e
 	}
 	_ = resp.Body.Close()
 	return nil
+}
+
+func (p *Provider) requestHeaders(ctx context.Context) map[string]string {
+	return utils.AddClientRequestID(ctx, utils.AuthHeader(p.apiKey), utils.ClientRequestIDHeader)
 }
 
 func (p *Provider) DoDownload(ctx context.Context, _ *sdk.VideoModel, output sdk.VideoOutput) (data []byte, contentType string, err error) {

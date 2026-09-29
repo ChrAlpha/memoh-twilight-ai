@@ -561,5 +561,7 @@ func mapFinishReason(reason string) sdk.FinishReason {
 }
 
 func (p *Provider) requestHeaders(ctx context.Context) map[string]string {
-	return utils.RequestHeaders(ctx, utils.AuthHeader(p.githubToken), p.headers)
+	headers := utils.RequestHeaders(ctx, utils.AuthHeader(p.githubToken), p.headers)
+	// VS Code Copilot Chat sends its own request ID as X-Request-Id.
+	return utils.AddClientRequestID(ctx, headers, "X-Request-Id")
 }

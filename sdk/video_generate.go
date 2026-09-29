@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/felinics/twilight/internal/reqheaders"
 )
 
 const (
@@ -189,6 +191,9 @@ func (c *Client) GenerateVideo(ctx context.Context, options ...VideoOption) (*Vi
 	if !cfg.Wait {
 		return result, nil
 	}
+	// The client request ID identifies the create request; polling and the
+	// download are separate requests about a job that already has an ID.
+	ctx = reqheaders.WithClientRequestID(ctx, "")
 
 	waitCtx, cancel := context.WithTimeout(ctx, cfg.PollTimeout)
 	defer cancel()

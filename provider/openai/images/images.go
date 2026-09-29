@@ -217,5 +217,6 @@ func needsMultipart(params *sdk.ImageEditParams) bool {
 }
 
 func (p *Provider) requestHeaders(ctx context.Context) map[string]string {
-	return utils.RequestHeaders(ctx, utils.AuthHeader(p.apiKey), p.headers)
+	headers := utils.RequestHeaders(ctx, utils.AuthHeader(p.apiKey), p.headers)
+	return utils.AddClientRequestID(ctx, headers, utils.ClientRequestIDHeader)
 }
