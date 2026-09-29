@@ -39,3 +39,40 @@ func TestDecodeError(t *testing.T) {
 	}
 	providertest.RunErrorCases(t, "anthropic-messages", decodeError, cases)
 }
+
+// Every error type of the ErrorResponse schema, with the schema's default
+// message, in
+// https://github.com/anthropics/anthropic-sdk-go/blob/ad865dfa3d1a8d2f4a7ad0d072011e811e9957a9/scripts/mock-spec.json.gz
+// (MIT, Copyright 2023 Anthropic, PBC.), and the two types that only
+// https://platform.claude.com/docs/en/api/errors lists, conflict_error and
+// request_too_large. The statuses are the documentation's. The documentation
+// gives no message for those two, so theirs are placeholders.
+func TestDecodeErrorTypes(t *testing.T) {
+	types := []struct {
+		status       int
+		typ, message string
+		kind         sdk.ErrorKind
+	}{
+		{400, "invalid_request_error", "Invalid request", sdk.KindUnknown},
+		{401, "authentication_error", "Authentication error", sdk.KindAuthentication},
+		{402, "billing_error", "Billing error", sdk.KindQuotaExhausted},
+		{403, "permission_error", "Permission denied", sdk.KindPermissionDenied},
+		{404, "not_found_error", "Not found", sdk.KindUnknown},
+		{409, "conflict_error", "Conflict", sdk.KindUnknown},
+		{413, "request_too_large", "Request too large", sdk.KindUnknown},
+		{429, "rate_limit_error", "Rate limited", sdk.KindRateLimited},
+		{500, "api_error", "Internal server error", sdk.KindServerError},
+		{504, "timeout_error", "Request timeout", sdk.KindServerError},
+		{529, "overloaded_error", "Overloaded", sdk.KindServerError},
+	}
+	cases := make([]providertest.ErrorCase, 0, len(types))
+	for _, et := range types {
+		cases = append(cases, providertest.ErrorCase{
+			Name:   et.typ,
+			Status: et.status,
+			Body:   `{"type":"error","error":{"type":"` + et.typ + `","message":"` + et.message + `"},"request_id":"req_body"}`,
+			Want:   sdk.APIError{Type: et.typ, Message: et.message, RequestID: "req_body", Kind: et.kind},
+		})
+	}
+	providertest.RunErrorCases(t, "anthropic-messages", decodeError, cases)
+}

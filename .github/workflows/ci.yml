@@ -26,6 +26,12 @@ jobs:
         with:
           version: v2.11.3
 
+      - name: golangci-lint (official SDK differential tests)
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.3
+          working-directory: internal/sdkdiff
+
       - name: go mod tidy
         run: go mod tidy && git diff --exit-code go.mod go.sum
 
@@ -62,6 +68,10 @@ jobs:
 
       - name: Unit Tests
         run: go test ./... -short -count=1 -race -v
+
+      - name: Official SDK differential tests
+        working-directory: internal/sdkdiff
+        run: go test ./... -count=1 -race -v
 
   integration:
     name: Integration Tests

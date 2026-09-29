@@ -156,8 +156,8 @@ func TestDecodeOpenAIFailedEvent(t *testing.T) {
 
 // Canonical statuses: https://cloud.google.com/apis/design/errors. ErrorInfo
 // reasons: https://github.com/googleapis/googleapis/blob/563e22e733b315aca418482f644c878997f328ea/google/api/error_reason.proto
-// The "api key invalid" and "not found" bodies are verbatim from
-// generativelanguage.googleapis.com on 2026-09-29. The RESOURCE_EXHAUSTED body
+// The "api key invalid", "api key missing" and "not found" bodies are verbatim
+// from generativelanguage.googleapis.com on 2026-09-29. The RESOURCE_EXHAUSTED body
 // is the design guide's example, verbatim; the others put the proto's
 // ErrorInfo examples inside the same envelope.
 func TestDecodeGoogle(t *testing.T) {
@@ -231,6 +231,20 @@ func TestDecodeGoogle(t *testing.T) {
   }
 }`,
 			Want: sdk.APIError{Type: "NOT_FOUND", Kind: sdk.KindUnknown, Message: "models/gemini-does-not-exist is not found for API version v1beta, or is not supported for generateContent. Call ModelService.ListModels to see the list of available models and their supported methods."},
+		},
+		{
+			// A request without a key carries no ErrorInfo, so the canonical
+			// status decides.
+			Name:   "api key missing",
+			Status: http.StatusForbidden,
+			Body: `{
+  "error": {
+    "code": 403,
+    "message": "Method doesn't allow unregistered callers (callers without established identity). Please use API Key or other form of API consumer identity to call this API.",
+    "status": "PERMISSION_DENIED"
+  }
+}`,
+			Want: sdk.APIError{Type: "PERMISSION_DENIED", Kind: sdk.KindPermissionDenied, Message: "Method doesn't allow unregistered callers (callers without established identity). Please use API Key or other form of API consumer identity to call this API."},
 		},
 		{
 			// The reason wins over the 400 status.
