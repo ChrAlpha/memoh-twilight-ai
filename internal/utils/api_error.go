@@ -73,6 +73,10 @@ func kindFromStatus(status int) sdk.ErrorKind {
 		return sdk.KindPermissionDenied
 	case status == http.StatusTooManyRequests:
 		return sdk.KindRateLimited
+	case status == http.StatusNotImplemented, status == http.StatusHTTPVersionNotSupported:
+		// The server does not support the method or the HTTP version, which
+		// retrying does not change.
+		return sdk.KindUnknown
 	case status >= 500 && status <= 599:
 		return sdk.KindServerError
 	default:
