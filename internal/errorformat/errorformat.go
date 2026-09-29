@@ -257,10 +257,12 @@ type openRouterBody struct {
 // DecodeOpenRouter is the error decoder for OpenRouter
 // (https://openrouter.ai/docs/api-reference/errors). Code is the numeric code
 // as text and Type is metadata.error_type, which OpenRouter documents as the
-// field to classify by. No request ID header is documented, so RequestID
-// stays empty.
+// field to classify by. RequestID is the x-generation-id response header,
+// which OpenRouter sends on chat completion errors and lists in
+// Access-Control-Expose-Headers; its API reference does not describe it.
 func DecodeOpenRouter(e *sdk.APIError) {
 	ParseOpenAI(e)
+	e.RequestID = e.Header.Get("x-generation-id")
 	var body openRouterBody
 	if json.Unmarshal(e.Body, &body) == nil && body.Error.Metadata.ErrorType != "" {
 		e.Type = body.Error.Metadata.ErrorType
