@@ -96,6 +96,22 @@ func TestDoGetMapsCompletedResponse(t *testing.T) {
 	}
 }
 
+func TestDoGetMapsExpiredJob(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(videoResponse{ID: "job-1", Status: "expired"})
+	}))
+	defer server.Close()
+
+	prov := New(WithAPIKey("test-key"), WithBaseURL(server.URL))
+	job, err := prov.DoGet(context.Background(), prov.VideoModel("alibaba/wan-3.0"), "job-1")
+	if err != nil {
+		t.Fatalf("DoGet returned error: %v", err)
+	}
+	if job.Status != sdk.VideoJobFailed || job.Error == nil || job.Error.Code != "expired" {
+		t.Fatalf("status, error = %s, %#v", job.Status, job.Error)
+	}
+}
+
 // The unsigned URL has the form of a live response, 2026-09-29.
 func TestDoDownloadSendsKeyOnlyToBaseHost(t *testing.T) {
 	var gotAuth string

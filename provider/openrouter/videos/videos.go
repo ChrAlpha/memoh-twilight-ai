@@ -215,7 +215,11 @@ func toVideoJob(resp *videoResponse, modelID string) *sdk.VideoJob {
 			"usage":         resp.Usage,
 		})),
 	}
-	if resp.Error != "" {
+	switch {
+	case strings.EqualFold(strings.TrimSpace(resp.Status), "expired"):
+		// The status is kept as Code so an expired job can be told from a failed one.
+		job.Error = &sdk.VideoError{Code: "expired", Message: resp.Error}
+	case resp.Error != "":
 		job.Error = &sdk.VideoError{Message: resp.Error}
 	}
 	for _, url := range resp.UnsignedURLs {
@@ -241,7 +245,7 @@ func mapStatus(status string) sdk.VideoJobStatus {
 		return sdk.VideoJobRunning
 	case "completed", "succeeded", "success":
 		return sdk.VideoJobSucceeded
-	case "failed", "error":
+	case "failed", "error", "expired":
 		return sdk.VideoJobFailed
 	case "canceled", "cancelled":
 		return sdk.VideoJobCanceled
