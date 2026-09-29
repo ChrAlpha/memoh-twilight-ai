@@ -158,8 +158,14 @@ func TestDecodeOpenAIFailedEvent(t *testing.T) {
 // reasons: https://github.com/googleapis/googleapis/blob/563e22e733b315aca418482f644c878997f328ea/google/api/error_reason.proto
 // The "api key invalid", "api key missing" and "not found" bodies are verbatim
 // from generativelanguage.googleapis.com on 2026-09-29. The RESOURCE_EXHAUSTED body
-// is the design guide's example, verbatim; the others put the proto's
-// ErrorInfo examples inside the same envelope.
+// is the design guide's example, verbatim. The daily quota bodies are the
+// Gemini API responses quoted in
+// https://github.com/google-gemini/gemini-cli/issues/9248 (taken out of the
+// CLI's wrapping error) and
+// https://github.com/google-gemini/gemini-cli/issues/8437 (converted from a
+// Python dict to JSON); the per-minute body is the latter without its daily
+// violation. The others put the proto's ErrorInfo examples inside the same
+// envelope.
 func TestDecodeGoogle(t *testing.T) {
 	providertest.RunErrorCases(t, "google-generative-ai", errorformat.DecodeGoogle, []providertest.ErrorCase{
 		{
@@ -213,6 +219,65 @@ func TestDecodeGoogle(t *testing.T) {
 				Type: "RESOURCE_EXHAUSTED", Code: "RESOURCE_AVAILABILITY", Kind: sdk.KindRateLimited,
 				Message: "The zone 'us-east1-a' does not have enough resources available to fulfill the request. Try a different zone, or try again later.",
 			},
+		},
+		{
+			// RESOURCE_EXHAUSTED alone is rate_limited; the daily quota in
+			// the QuotaFailure makes it quota_exhausted.
+			Name:   "daily quota",
+			Status: http.StatusTooManyRequests,
+			Body: `{
+  "error": {
+    "code": 429,
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 50\nPlease retry in 34.074824224s.",
+    "status": "RESOURCE_EXHAUSTED",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+        "violations": [
+          {
+            "quotaMetric": "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+            "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+            "quotaDimensions": {
+              "location": "global",
+              "model": "gemini-2.5-pro"
+            },
+            "quotaValue": "50"
+          }
+        ]
+      },
+      {
+        "@type": "type.googleapis.com/google.rpc.Help",
+        "links": [
+          {
+            "description": "Learn more about Gemini API quotas",
+            "url": "https://ai.google.dev/gemini-api/docs/rate-limits"
+          }
+        ]
+      },
+      {
+        "@type": "type.googleapis.com/google.rpc.RetryInfo",
+        "retryDelay": "34s"
+      }
+    ]
+  }
+}`,
+			Want: sdk.APIError{
+				Type: "RESOURCE_EXHAUSTED", Kind: sdk.KindQuotaExhausted,
+				Message: "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 50\nPlease retry in 34.074824224s.",
+			},
+		},
+		{
+			// One daily violation among per-minute ones is enough.
+			Name:   "daily and per-minute quotas",
+			Status: http.StatusTooManyRequests,
+			Body:   `{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_input_token_count","quotaId":"GenerateContentInputTokensPerModelPerMinute-FreeTier","quotaDimensions":{"location":"global","model":"gemini-2.5-flash-preview-image"}},{"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests","quotaId":"GenerateRequestsPerMinutePerProjectPerModel-FreeTier","quotaDimensions":{"location":"global","model":"gemini-2.5-flash-preview-image"}},{"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests","quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier","quotaDimensions":{"model":"gemini-2.5-flash-preview-image","location":"global"}}]},{"@type":"type.googleapis.com/google.rpc.Help","links":[{"description":"Learn more about Gemini API quotas","url":"https://ai.google.dev/gemini-api/docs/rate-limits"}]},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"55s"}]}}`,
+			Want:   sdk.APIError{Type: "RESOURCE_EXHAUSTED", Message: "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.", Kind: sdk.KindQuotaExhausted},
+		},
+		{
+			Name:   "per-minute quotas",
+			Status: http.StatusTooManyRequests,
+			Body:   `{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_input_token_count","quotaId":"GenerateContentInputTokensPerModelPerMinute-FreeTier","quotaDimensions":{"location":"global","model":"gemini-2.5-flash-preview-image"}},{"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests","quotaId":"GenerateRequestsPerMinutePerProjectPerModel-FreeTier","quotaDimensions":{"location":"global","model":"gemini-2.5-flash-preview-image"}}]},{"@type":"type.googleapis.com/google.rpc.Help","links":[{"description":"Learn more about Gemini API quotas","url":"https://ai.google.dev/gemini-api/docs/rate-limits"}]},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"55s"}]}}`,
+			Want:   sdk.APIError{Type: "RESOURCE_EXHAUSTED", Message: "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.", Kind: sdk.KindRateLimited},
 		},
 		{
 			Name:   "unavailable",

@@ -148,8 +148,8 @@ const (
 	// KindPermissionDenied means the credentials are valid but lack access to
 	// the requested resource.
 	KindPermissionDenied ErrorKind = "permission_denied"
-	// KindQuotaExhausted means the account's credit, billing or spend limit is
-	// used up; waiting briefly does not help.
+	// KindQuotaExhausted means the account's credit, billing or spend limit,
+	// or a daily quota, is used up; waiting briefly does not help.
 	KindQuotaExhausted ErrorKind = "quota_exhausted"
 	// KindRateLimited means a request or token rate limit was hit; it is
 	// transient.

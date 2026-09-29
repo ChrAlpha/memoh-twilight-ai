@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/felinics/twilight/sdk"
 )
@@ -162,18 +164,40 @@ type googleBody struct {
 		Message string `json:"message"`
 		Status  string `json:"status"`
 		Details []struct {
-			Type   string `json:"@type"`
-			Reason string `json:"reason"`
+			Type       string                 `json:"@type"`
+			Reason     string                 `json:"reason"`
+			Violations []googleQuotaViolation `json:"violations"`
 		} `json:"details"`
 	} `json:"error"`
 }
 
-const googleErrorInfo = "type.googleapis.com/google.rpc.ErrorInfo"
+// googleQuotaViolation is a violation of a google.rpc.QuotaFailure detail.
+type googleQuotaViolation struct {
+	QuotaID string `json:"quotaId"`
+}
+
+// daily reports whether the violated quota is a daily one. Google publishes
+// no list of quota IDs; a daily one's ID contains PerDay or Daily, which is
+// how the Gemini CLI tells them apart
+// (https://github.com/google-gemini/gemini-cli/blob/2139b121bc028e0b4c96b97385555b19c2dd629d/packages/core/src/utils/googleQuotaErrors.ts).
+func (v googleQuotaViolation) daily() bool {
+	return strings.Contains(v.QuotaID, "PerDay") || strings.Contains(v.QuotaID, "Daily")
+}
+
+const (
+	googleErrorInfo    = "type.googleapis.com/google.rpc.ErrorInfo"
+	googleQuotaFailure = "type.googleapis.com/google.rpc.QuotaFailure"
+)
 
 // DecodeGoogle is the error decoder for Google APIs, which report errors as a
 // google.rpc.Status. Type is the canonical status (error.status) and Code is
 // the reason of the google.rpc.ErrorInfo detail, when there is one. The APIs
 // document no request ID header, so RequestID stays empty.
+//
+// RESOURCE_EXHAUSTED covers per-minute and per-day quotas alike. When a
+// google.rpc.QuotaFailure detail names a daily quota among its violations,
+// the Kind is KindQuotaExhausted: the quota resets once a day, whatever delay
+// the RetryInfo detail suggests.
 func DecodeGoogle(e *sdk.APIError) {
 	var body googleBody
 	if json.Unmarshal(e.Body, &body) != nil {
@@ -189,6 +213,12 @@ func DecodeGoogle(e *sdk.APIError) {
 	}
 	if k := GoogleKind(e.Type, e.Code); k != sdk.KindUnknown {
 		e.Kind = k
+	}
+	for _, d := range body.Error.Details {
+		if d.Type == googleQuotaFailure && slices.ContainsFunc(d.Violations, googleQuotaViolation.daily) {
+			e.Kind = sdk.KindQuotaExhausted
+			break
+		}
 	}
 }
 
