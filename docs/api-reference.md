@@ -978,13 +978,13 @@ The Edge provider reads these keys from `SpeechParams.Config`:
 | `speed` | `float64` | `0` | Speech rate (1.0 = normal) |
 | `pitch` | `float64` | `0` | Pitch in Hz |
 
-#### Package-Level Variables
+#### Helper Functions
 
 ```go
-var EdgeTTSVoices map[string][]string  // language tag → voice IDs
+func Voices() map[string][]string
 ```
 
-#### Helper Functions
+Returns the voice catalog (language tag → voice IDs). Each call returns a new deep copy; modifying it does not affect the package.
 
 ```go
 func LookupVoiceLang(voiceID string) (string, bool)
