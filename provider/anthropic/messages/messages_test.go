@@ -969,6 +969,93 @@ func TestDoStream_Thinking(t *testing.T) {
 	}
 }
 
+// Stop reasons: https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons
+func TestFinishReasonMapping(t *testing.T) {
+	tests := []struct {
+		stopReason string
+		want       sdk.FinishReason
+	}{
+		{"end_turn", sdk.FinishReasonStop},
+		{"stop_sequence", sdk.FinishReasonStop},
+		{"tool_use", sdk.FinishReasonToolCalls},
+		{"max_tokens", sdk.FinishReasonLength},
+		{"model_context_window_exceeded", sdk.FinishReasonLength},
+		{"refusal", sdk.FinishReasonContentFilter},
+	}
+	for _, tt := range tests {
+		t.Run(tt.stopReason, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					Stream bool `json:"stream"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				if !body.Stream {
+					w.Header().Set("Content-Type", "application/json")
+					fmt.Fprintf(w, `{"id":"msg_fr","type":"message","model":"claude-sonnet-4-5","role":"assistant","content":[{"type":"text","text":"Hi"}],"stop_reason":%q,"usage":{"input_tokens":5,"output_tokens":1}}`, tt.stopReason)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				for _, e := range [][2]string{
+					{"message_start", `{"type":"message_start","message":{"id":"msg_fr","type":"message","model":"claude-sonnet-4-5","role":"assistant","content":[],"usage":{"input_tokens":5,"output_tokens":0}}}`},
+					{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+					{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}`},
+					{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+					{"message_delta", fmt.Sprintf(`{"type":"message_delta","delta":{"stop_reason":%q},"usage":{"output_tokens":1}}`, tt.stopReason)},
+					{"message_stop", `{"type":"message_stop"}`},
+				} {
+					fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e[0], e[1])
+				}
+			}))
+			defer srv.Close()
+
+			p := messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(srv.URL))
+			req := sdk.Request{
+				Model: "claude-sonnet-4-5",
+				Messages: []sdk.Message{{
+					Role:    sdk.MessageRoleUser,
+					Content: []sdk.MessagePart{sdk.TextPart{Text: "Hi"}},
+				}},
+			}
+
+			result, err := p.DoGenerate(context.Background(), req)
+			if err != nil {
+				t.Fatalf("DoGenerate failed: %v", err)
+			}
+			if result.FinishReason != tt.want || result.RawFinishReason != tt.stopReason {
+				t.Errorf("DoGenerate: finish reason %q (raw %q), want %q (raw %q)",
+					result.FinishReason, result.RawFinishReason, tt.want, tt.stopReason)
+			}
+
+			sr, err := p.DoStream(context.Background(), req)
+			if err != nil {
+				t.Fatalf("DoStream failed: %v", err)
+			}
+			var gotStep, gotFinish bool
+			for part := range sr {
+				switch p := part.(type) {
+				case *sdk.FinishStepPart:
+					gotStep = true
+					if p.FinishReason != tt.want || p.RawFinishReason != tt.stopReason {
+						t.Errorf("FinishStepPart: finish reason %q (raw %q), want %q (raw %q)",
+							p.FinishReason, p.RawFinishReason, tt.want, tt.stopReason)
+					}
+				case *sdk.FinishPart:
+					gotFinish = true
+					if p.FinishReason != tt.want || p.RawFinishReason != tt.stopReason {
+						t.Errorf("FinishPart: finish reason %q (raw %q), want %q (raw %q)",
+							p.FinishReason, p.RawFinishReason, tt.want, tt.stopReason)
+					}
+				case *sdk.ErrorPart:
+					t.Fatalf("error: %v", p.Error)
+				}
+			}
+			if !gotStep || !gotFinish {
+				t.Errorf("FinishStepPart seen %v, FinishPart seen %v, want both", gotStep, gotFinish)
+			}
+		})
+	}
+}
+
 func TestDoGenerate_ReasoningFromOtherProvider(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
