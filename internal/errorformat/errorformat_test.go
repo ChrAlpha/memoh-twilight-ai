@@ -54,6 +54,19 @@ func TestDecodeOpenAI(t *testing.T) {
 			Want:   sdk.APIError{Type: "server_error", Message: "The server had an error while processing your request.", Kind: sdk.KindServerError},
 		},
 		{
+			// The type classifies when the code has no mapping.
+			Name:   "insufficient quota type",
+			Status: http.StatusBadRequest,
+			Body:   `{"error":{"message":"quota","type":"insufficient_quota","param":null,"code":"made_up"}}`,
+			Want:   sdk.APIError{Type: "insufficient_quota", Code: "made_up", Message: "quota", Kind: sdk.KindQuotaExhausted},
+		},
+		{
+			Name:   "server error type",
+			Status: http.StatusBadRequest,
+			Body:   `{"error":{"message":"boom","type":"server_error","param":null,"code":"made_up"}}`,
+			Want:   sdk.APIError{Type: "server_error", Code: "made_up", Message: "boom", Kind: sdk.KindServerError},
+		},
+		{
 			Name:   "unsupported region falls back to status",
 			Status: http.StatusForbidden,
 			Body:   `{"error":{"message":"Country, region, or territory not supported","type":"request_forbidden","param":null,"code":"unsupported_country_region_territory"}}`,
@@ -133,20 +146,48 @@ func TestDecodeOpenAIFailedEvent(t *testing.T) {
 			Body: `{"type":"response.failed","response":{"status":"failed"}}`,
 			Want: sdk.APIError{Kind: sdk.KindUnknown},
 		},
+		{
+			Name: "not json",
+			Body: `not json`,
+			Want: sdk.APIError{Kind: sdk.KindUnknown},
+		},
 	})
 }
 
 // Canonical statuses: https://cloud.google.com/apis/design/errors. ErrorInfo
 // reasons: https://github.com/googleapis/googleapis/blob/563e22e733b315aca418482f644c878997f328ea/google/api/error_reason.proto
-// The RESOURCE_EXHAUSTED body is the design guide's example, verbatim; the
-// others put the proto's ErrorInfo examples inside the same envelope.
+// The "api key invalid" and "not found" bodies are verbatim from
+// generativelanguage.googleapis.com on 2026-09-29. The RESOURCE_EXHAUSTED body
+// is the design guide's example, verbatim; the others put the proto's
+// ErrorInfo examples inside the same envelope.
 func TestDecodeGoogle(t *testing.T) {
 	providertest.RunErrorCases(t, "google-generative-ai", errorformat.DecodeGoogle, []providertest.ErrorCase{
 		{
 			// The reason wins over the 400 status.
 			Name:   "api key invalid",
 			Status: http.StatusBadRequest,
-			Body:   `{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"API_KEY_INVALID","domain":"googleapis.com","metadata":{"service":"generativelanguage.googleapis.com"}}]}}`,
+			Body: `{
+  "error": {
+    "code": 400,
+    "message": "API key not valid. Please pass a valid API key.",
+    "status": "INVALID_ARGUMENT",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "API_KEY_INVALID",
+        "domain": "googleapis.com",
+        "metadata": {
+          "service": "generativelanguage.googleapis.com"
+        }
+      },
+      {
+        "@type": "type.googleapis.com/google.rpc.LocalizedMessage",
+        "locale": "en-US",
+        "message": "API key not valid. Please pass a valid API key."
+      }
+    ]
+  }
+}`,
 			Want: sdk.APIError{
 				Type: "INVALID_ARGUMENT", Code: "API_KEY_INVALID",
 				Message: "API key not valid. Please pass a valid API key.", Kind: sdk.KindAuthentication,
@@ -182,8 +223,41 @@ func TestDecodeGoogle(t *testing.T) {
 		{
 			Name:   "not found",
 			Status: http.StatusNotFound,
-			Body:   `{"error":{"code":404,"message":"models/x is not found","status":"NOT_FOUND"}}`,
-			Want:   sdk.APIError{Type: "NOT_FOUND", Message: "models/x is not found", Kind: sdk.KindUnknown},
+			Body: `{
+  "error": {
+    "code": 404,
+    "message": "models/gemini-does-not-exist is not found for API version v1beta, or is not supported for generateContent. Call ModelService.ListModels to see the list of available models and their supported methods.",
+    "status": "NOT_FOUND"
+  }
+}`,
+			Want: sdk.APIError{Type: "NOT_FOUND", Kind: sdk.KindUnknown, Message: "models/gemini-does-not-exist is not found for API version v1beta, or is not supported for generateContent. Call ModelService.ListModels to see the list of available models and their supported methods."},
+		},
+		{
+			// The reason wins over the 400 status.
+			Name:   "api key service blocked",
+			Status: http.StatusBadRequest,
+			Body:   `{"error":{"code":400,"message":"Requests to this API are blocked.","status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"API_KEY_SERVICE_BLOCKED","domain":"googleapis.com","metadata":{"service":"storage.googleapis.com"}}]}}`,
+			Want:   sdk.APIError{Type: "PERMISSION_DENIED", Code: "API_KEY_SERVICE_BLOCKED", Message: "Requests to this API are blocked.", Kind: sdk.KindPermissionDenied},
+		},
+		{
+			// The reason wins over the 403 status.
+			Name:   "rate limit exceeded",
+			Status: http.StatusForbidden,
+			Body:   `{"error":{"code":403,"message":"Quota exceeded.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED","domain":"googleapis.com","metadata":{"service":"pubsub.googleapis.com"}}]}}`,
+			Want:   sdk.APIError{Type: "RESOURCE_EXHAUSTED", Code: "RATE_LIMIT_EXCEEDED", Message: "Quota exceeded.", Kind: sdk.KindRateLimited},
+		},
+		{
+			// The canonical status wins over the 400 status.
+			Name:   "unauthenticated",
+			Status: http.StatusBadRequest,
+			Body:   `{"error":{"code":401,"message":"Request had invalid authentication credentials.","status":"UNAUTHENTICATED"}}`,
+			Want:   sdk.APIError{Type: "UNAUTHENTICATED", Message: "Request had invalid authentication credentials.", Kind: sdk.KindAuthentication},
+		},
+		{
+			Name:   "not json keeps the status kind",
+			Status: http.StatusBadGateway,
+			Body:   `<html>Bad Gateway</html>`,
+			Want:   sdk.APIError{Kind: sdk.KindServerError},
 		},
 	})
 }
@@ -212,6 +286,18 @@ func TestDecodeOpenRouter(t *testing.T) {
 		{Name: "provider overloaded", Status: 503,
 			Body: `{"error":{"code":503,"message":"busy","metadata":{"error_type":"provider_overloaded"}}}`,
 			Want: sdk.APIError{Type: "provider_overloaded", Code: "503", Message: "busy", Kind: sdk.KindServerError}},
+		{Name: "typed authentication wins over 400", Status: 400,
+			Body: `{"error":{"code":400,"message":"Invalid API key","metadata":{"error_type":"authentication"}}}`,
+			Want: sdk.APIError{Type: "authentication", Code: "400", Message: "Invalid API key", Kind: sdk.KindAuthentication}},
+		{Name: "typed permission denied wins over 400", Status: 400,
+			Body: `{"error":{"code":400,"message":"denied","metadata":{"error_type":"permission_denied"}}}`,
+			Want: sdk.APIError{Type: "permission_denied", Code: "400", Message: "denied", Kind: sdk.KindPermissionDenied}},
+		{Name: "typed payment required wins over 400", Status: 400,
+			Body: `{"error":{"code":400,"message":"Insufficient credits","metadata":{"error_type":"payment_required"}}}`,
+			Want: sdk.APIError{Type: "payment_required", Code: "400", Message: "Insufficient credits", Kind: sdk.KindQuotaExhausted}},
+		{Name: "unmapped timeout falls back to status", Status: 504,
+			Body: `{"error":{"code":504,"message":"Provider did not respond before the upstream deadline","metadata":{"error_type":"timeout"}}}`,
+			Want: sdk.APIError{Type: "timeout", Code: "504", Message: "Provider did not respond before the upstream deadline", Kind: sdk.KindServerError}},
 	}
 	providertest.RunErrorCases(t, "openrouter-videos", errorformat.DecodeOpenRouter, cases)
 }
