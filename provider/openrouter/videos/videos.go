@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/felinics/twilight/internal/utils"
@@ -164,6 +165,10 @@ func (p *Provider) DoCancel(_ context.Context, _ *sdk.VideoModel, _ string) erro
 	return fmt.Errorf("openrouter videos: cancel is not supported")
 }
 
+// DoDownload fetches an output URL. OpenRouter's unsigned URLs point at its
+// GET /v1/videos/{jobId}/content endpoint, which needs the API key like every
+// other endpoint. The key is sent only to the host of the base URL, so an output
+// stored elsewhere never receives it.
 func (p *Provider) DoDownload(ctx context.Context, _ *sdk.VideoModel, output sdk.VideoOutput) (data []byte, contentType string, err error) {
 	if output.URL == "" {
 		return nil, "", fmt.Errorf("openrouter videos: output URL is required")
@@ -171,6 +176,11 @@ func (p *Provider) DoDownload(ctx context.Context, _ *sdk.VideoModel, output sdk
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, output.URL, http.NoBody)
 	if err != nil {
 		return nil, "", fmt.Errorf("openrouter videos: build download request: %w", err)
+	}
+	if base, err := url.Parse(p.baseURL); err == nil && req.URL.Scheme == base.Scheme && req.URL.Host == base.Host {
+		for k, v := range utils.AuthHeader(p.apiKey) {
+			req.Header.Set(k, v)
+		}
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {

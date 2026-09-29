@@ -96,6 +96,43 @@ func TestDoGetMapsCompletedResponse(t *testing.T) {
 	}
 }
 
+// The unsigned URL has the form of a live response, 2026-09-29.
+func TestDoDownloadSendsKeyOnlyToBaseHost(t *testing.T) {
+	var gotAuth string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("mp4"))
+	})
+	base := httptest.NewServer(handler)
+	defer base.Close()
+	other := httptest.NewServer(handler)
+	defer other.Close()
+
+	prov := New(WithAPIKey("test-key"), WithBaseURL(base.URL+"/api"))
+	cases := []struct {
+		name, url, wantAuth string
+	}{
+		{"base host", base.URL + "/api/v1/videos/gen-vid-1-abc/content?index=0", "Bearer test-key"},
+		{"other host", other.URL + "/out.mp4", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotAuth = ""
+			data, contentType, err := prov.DoDownload(context.Background(), nil, sdk.VideoOutput{URL: tc.url})
+			if err != nil {
+				t.Fatalf("DoDownload returned error: %v", err)
+			}
+			if string(data) != "mp4" || contentType != "video/mp4" {
+				t.Fatalf("data, content type = %q, %q", data, contentType)
+			}
+			if gotAuth != tc.wantAuth {
+				t.Fatalf("Authorization = %q, want %q", gotAuth, tc.wantAuth)
+			}
+		})
+	}
+}
+
 func TestListModelsMapsCapabilities(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/videos/models" {
