@@ -193,18 +193,21 @@ func DecodeGoogle(e *sdk.APIError) {
 }
 
 // GoogleKind classifies a google.rpc.Status by its ErrorInfo reason and, when
-// the reason has no mapping, by its canonical status.
+// the reason has no mapping, by its canonical status. The reasons are values
+// of google.api.ErrorReason
+// (https://github.com/googleapis/googleapis/blob/master/google/api/error_reason.proto).
 func GoogleKind(status, reason string) sdk.ErrorKind {
 	switch reason {
-	case "API_KEY_INVALID", "API_KEY_MISSING", "CREDENTIALS_MISSING",
-		"ACCESS_TOKEN_EXPIRED", "ACCESS_TOKEN_TYPE_UNSUPPORTED":
+	case "API_KEY_INVALID", "CREDENTIALS_MISSING", "ACCESS_TOKEN_EXPIRED",
+		"ACCESS_TOKEN_TYPE_UNSUPPORTED", "CREDENTIAL_TYPE_UNSUPPORTED", "JWT_TOKEN_INVALID":
 		return sdk.KindAuthentication
 	case "API_KEY_SERVICE_BLOCKED", "API_KEY_HTTP_REFERRER_BLOCKED", "API_KEY_IP_ADDRESS_BLOCKED",
-		"ACCESS_TOKEN_SCOPE_INSUFFICIENT", "CONSUMER_SUSPENDED", "SERVICE_DISABLED", "USER_PROJECT_DENIED":
+		"API_KEY_ANDROID_APP_BLOCKED", "API_KEY_IOS_APP_BLOCKED", "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
+		"IAM_PERMISSION_DENIED", "USER_PROJECT_DENIED", "SERVICE_DISABLED", "CONSUMER_SUSPENDED":
 		return sdk.KindPermissionDenied
 	case "BILLING_DISABLED":
 		return sdk.KindQuotaExhausted
-	case "RATE_LIMIT_EXCEEDED", "QUOTA_EXCEEDED", "RESOURCE_EXHAUSTED":
+	case "RATE_LIMIT_EXCEEDED":
 		return sdk.KindRateLimited
 	}
 	switch status {
