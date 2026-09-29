@@ -544,9 +544,19 @@ func TestDecodeElevenLabs(t *testing.T) {
 			},
 		},
 		{
-			Name:   "request-id header without a JSON body",
+			// Live response, 2026-09-29: only the legacy fields, ID in x-trace-id.
+			Name:   "legacy body",
+			Status: http.StatusBadRequest,
+			Header: http.Header{"X-Trace-Id": {"1f25c79bd623c2cb841446a20f14af00"}},
+			Body:   `{"detail":{"status":"model_not_found","message":"A model with model ID eleven_nope does not exist ..."}}`,
+			Want: sdk.APIError{
+				Code: "model_not_found", Message: "A model with model ID eleven_nope does not exist ...", RequestID: "1f25c79bd623c2cb841446a20f14af00", Kind: sdk.KindUnknown,
+			},
+		},
+		{
+			Name:   "x-trace-id header without a JSON body",
 			Status: http.StatusServiceUnavailable,
-			Header: http.Header{"Request-Id": {"hdr_503"}},
+			Header: http.Header{"X-Trace-Id": {"hdr_503"}},
 			Body:   "upstream unavailable",
 			Want:   sdk.APIError{RequestID: "hdr_503", Kind: sdk.KindServerError},
 		},

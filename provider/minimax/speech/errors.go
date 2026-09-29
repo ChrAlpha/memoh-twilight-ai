@@ -1,6 +1,7 @@
 package speech
 
 import (
+	"cmp"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -15,8 +16,9 @@ const providerName = "minimax-speech"
 // {"trace_id":"...","base_resp":{"status_code":1004,"status_msg":"..."}}.
 // status_code 0 is success. The shape is documented with the T2A response at
 // https://platform.minimax.io/docs/api-reference/speech-t2a-http and the codes
-// at https://platform.minimax.io/docs/api-reference/errorcode. No request ID
-// header is documented; trace_id is the ID MiniMax asks for in support.
+// at https://platform.minimax.io/docs/api-reference/errorcode. trace_id is the
+// ID MiniMax asks for in support. Error bodies often omit it; the Trace-Id
+// response header carries the same value.
 type errorBody struct {
 	TraceID  string `json:"trace_id"`
 	BaseResp struct {
@@ -26,13 +28,14 @@ type errorBody struct {
 }
 
 // decodeError fills e from a MiniMax body. Code is status_code as decimal
-// text and RequestID is trace_id.
+// text and RequestID is trace_id, or the Trace-Id header without one.
 func decodeError(e *sdk.APIError) {
+	e.RequestID = e.Header.Get("Trace-Id")
 	var body errorBody
 	if json.Unmarshal(e.Body, &body) != nil {
 		return
 	}
-	e.RequestID = body.TraceID
+	e.RequestID = cmp.Or(body.TraceID, e.RequestID)
 	if body.BaseResp.StatusCode == 0 {
 		return
 	}

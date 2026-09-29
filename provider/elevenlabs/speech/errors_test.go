@@ -39,7 +39,7 @@ func TestHTTPErrorIsAPIError(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("request-id", "req_402")
+				w.Header().Set("x-trace-id", "req_402")
 				w.WriteHeader(http.StatusPaymentRequired)
 				_, _ = w.Write([]byte(creditsBody))
 			}))

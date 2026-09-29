@@ -411,9 +411,11 @@ func DeepgramKind(code string) sdk.ErrorKind {
 
 // DecodeElevenLabs fills e from an ElevenLabs error body, documented at
 // https://elevenlabs.io/docs/eleven-api/resources/errors:
-// {"detail":{"type":"...","code":"...","message":"...","request_id":"...","param":"..."}}.
-// The request-id response header carries the same ID, see
-// https://elevenlabs.io/docs/eleven-api/guides/how-to/text-to-speech/request-stitching.
+// {"detail":{"type":"...","code":"...","message":"...","status":"...","request_id":"...","param":"..."}}.
+// Some endpoints still send only the legacy fields,
+// {"detail":{"status":"model_not_found","message":"..."}}, so Code falls back
+// to status. The x-trace-id response header carries the same ID as
+// request_id and is the only ID on a legacy body.
 // A body in any other shape keeps the Kind derived from the status.
 func DecodeElevenLabs(e *sdk.APIError) {
 	var body struct {
@@ -421,14 +423,15 @@ func DecodeElevenLabs(e *sdk.APIError) {
 			Type      string `json:"type"`
 			Code      string `json:"code"`
 			Message   string `json:"message"`
+			Status    string `json:"status"`
 			RequestID string `json:"request_id"`
 		} `json:"detail"`
 	}
 	_ = json.Unmarshal(e.Body, &body)
 	e.Type = body.Detail.Type
-	e.Code = body.Detail.Code
+	e.Code = cmp.Or(body.Detail.Code, body.Detail.Status)
 	e.Message = body.Detail.Message
-	e.RequestID = cmp.Or(body.Detail.RequestID, e.Header.Get("request-id"))
+	e.RequestID = cmp.Or(body.Detail.RequestID, e.Header.Get("x-trace-id"))
 	if k := ElevenLabsKind(e.Type, e.Code); k != sdk.KindUnknown {
 		e.Kind = k
 	}

@@ -47,10 +47,24 @@ func TestDecodeError(t *testing.T) {
 			},
 		},
 		{
+			// Live response, 2026-09-29: the body has no trace_id.
+			Name:   "trace id only in header",
+			Status: 0,
+			Header: http.Header{"Trace-Id": {"070b5993717d5b203b80a27adc1bbe20"}},
+			Body:   `{"base_resp":{"status_code":1004,"status_msg":"login fail: Please carry the API secret key in the 'Authorization' field of the request header"}}`,
+			Want: sdk.APIError{
+				Code:      "1004",
+				Message:   "login fail: Please carry the API secret key in the 'Authorization' field of the request header",
+				RequestID: "070b5993717d5b203b80a27adc1bbe20",
+				Kind:      sdk.KindAuthentication,
+			},
+		},
+		{
 			Name:   "not json",
 			Status: http.StatusBadGateway,
+			Header: http.Header{"Trace-Id": {"t502"}},
 			Body:   "<html>502 Bad Gateway</html>",
-			Want:   sdk.APIError{StatusCode: http.StatusBadGateway, Kind: sdk.KindServerError},
+			Want:   sdk.APIError{StatusCode: http.StatusBadGateway, RequestID: "t502", Kind: sdk.KindServerError},
 		},
 	})
 }
