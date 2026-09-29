@@ -6,16 +6,16 @@ description = "Build all packages"
 run = "go build ./..."
 
 [tasks.test]
-description = "Run all tests (short mode, skips integration)"
+description = "Run unit tests (no network; live API tests need -tags integration)"
 run = "go test -short -count=1 ./..."
 
 [tasks.test-unit]
 description = "Run unit tests only"
-run = "go test -count=1 -v -run '^Test[^I]' ./..."
+run = "go test -count=1 -v ./..."
 
 [tasks.test-integration]
-description = "Run integration tests (requires API keys in env)"
-run = "go test -count=1 -v -run '^TestIntegration_|^TestClient_' -timeout 120s ./..."
+description = "Run live API tests (sends real, possibly billed requests; keys from env or .env)"
+run = "go test -tags integration -count=1 -v -run '^TestIntegration_' -timeout 120s ./..."
 
 [tasks.test-race]
 description = "Run tests with race detector"
