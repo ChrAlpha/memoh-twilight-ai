@@ -24,8 +24,8 @@ func TestUsageAddPreservesCacheReporting(t *testing.T) {
 		input, read int
 		reported    bool
 	}{
-		{name: "empty seed", right: known, input: 100, read: 10, reported: true},
-		{name: "empty addition", left: known, input: 100, read: 10, reported: true},
+		{name: "unknown zero first", right: known, input: 100, read: 10},
+		{name: "unknown zero last", left: known, input: 100, read: 10},
 		{name: "all reported", left: known, right: known, input: 200, read: 20, reported: true},
 		{name: "mixed reporting", left: known, right: unknown, input: 1000, read: 10},
 		{name: "unknown first", left: unknown, right: known, input: 1000, read: 10},

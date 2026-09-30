@@ -41,16 +41,10 @@ type Usage struct {
 	OutputTokenDetails OutputTokenDetail `json:"outputTokenDetails,omitempty"`
 }
 
-// Add returns the field-by-field sum of u and other.
+// Add sums counters and reports cache reads only when both usages report them.
 //
 //nolint:gocritic // hugeParam: Add is a pure value operation and must not mutate caller-owned Usage.
 func (u Usage) Add(other Usage) Usage {
-	if u == (Usage{}) {
-		return other
-	}
-	if other == (Usage{}) {
-		return u
-	}
 	u.CacheReadTokensReported = u.CacheReadTokensReported && other.CacheReadTokensReported
 	u.InputTokens += other.InputTokens
 	u.OutputTokens += other.OutputTokens
