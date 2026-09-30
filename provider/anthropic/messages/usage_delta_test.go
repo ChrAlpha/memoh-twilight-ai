@@ -25,7 +25,7 @@ func TestStreamUsageUsesCumulativeDeltaFields(t *testing.T) {
 			deltas: []string{
 				`{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":200,"cache_creation_input_tokens":100}`,
 			},
-			want: sdk.Usage{InputTokens: 310, OutputTokens: 5, TotalTokens: 315, CachedInputTokens: 200,
+			want: sdk.Usage{InputTokens: 310, OutputTokens: 5, TotalTokens: 315, CachedInputTokens: 200, CacheReadTokensReported: true,
 				InputTokenDetails: sdk.InputTokenDetail{NoCacheTokens: 10, CacheReadTokens: 200, CacheWriteTokens: 100}},
 		},
 		{
@@ -34,7 +34,7 @@ func TestStreamUsageUsesCumulativeDeltaFields(t *testing.T) {
 			deltas: []string{
 				`{"output_tokens":5}`,
 			},
-			want: sdk.Usage{InputTokens: 310, OutputTokens: 5, TotalTokens: 315, CachedInputTokens: 200,
+			want: sdk.Usage{InputTokens: 310, OutputTokens: 5, TotalTokens: 315, CachedInputTokens: 200, CacheReadTokensReported: true,
 				InputTokenDetails: sdk.InputTokenDetail{NoCacheTokens: 10, CacheReadTokens: 200, CacheWriteTokens: 100, CacheWrite5mTokens: 60, CacheWrite1hTokens: 40}},
 		},
 		{
@@ -43,7 +43,7 @@ func TestStreamUsageUsesCumulativeDeltaFields(t *testing.T) {
 			deltas: []string{
 				`{"input_tokens":10,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}`,
 			},
-			want: sdk.Usage{InputTokens: 10, TotalTokens: 10,
+			want: sdk.Usage{InputTokens: 10, TotalTokens: 10, CacheReadTokensReported: true,
 				InputTokenDetails: sdk.InputTokenDetail{NoCacheTokens: 10}},
 		},
 		{
@@ -75,7 +75,7 @@ func TestStreamUsageUsesCumulativeDeltaFields(t *testing.T) {
 				`{"input_tokens":20,"output_tokens":3,"cache_read_input_tokens":400,"cache_creation_input_tokens":200}`,
 				`{"output_tokens":5}`,
 			},
-			want: sdk.Usage{InputTokens: 620, OutputTokens: 5, TotalTokens: 625, CachedInputTokens: 400,
+			want: sdk.Usage{InputTokens: 620, OutputTokens: 5, TotalTokens: 625, CachedInputTokens: 400, CacheReadTokensReported: true,
 				InputTokenDetails: sdk.InputTokenDetail{NoCacheTokens: 20, CacheReadTokens: 400, CacheWriteTokens: 200}},
 		},
 		{
@@ -86,7 +86,7 @@ func TestStreamUsageUsesCumulativeDeltaFields(t *testing.T) {
 				`{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":200,"cache_creation_input_tokens":100}`,
 			},
 			stopBeforeLast: true,
-			want: sdk.Usage{InputTokens: 310, OutputTokens: 5, TotalTokens: 315, CachedInputTokens: 200,
+			want: sdk.Usage{InputTokens: 310, OutputTokens: 5, TotalTokens: 315, CachedInputTokens: 200, CacheReadTokensReported: true,
 				InputTokenDetails: sdk.InputTokenDetail{NoCacheTokens: 10, CacheReadTokens: 200, CacheWriteTokens: 100}},
 		},
 		{
