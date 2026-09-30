@@ -66,6 +66,11 @@ linters:
           - goconst
           - gocritic
           - unparam
+      # Each decoder matches its own provider's wire codes; codes that happen
+      # to be spelled alike in two formats are not one value.
+      - path: ^internal/errorformat/
+        linters:
+          - goconst
 
 run:
   timeout: 5m

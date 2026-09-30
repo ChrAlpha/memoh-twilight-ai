@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
-	"github.com/felinics/twilight/internal/testutil"
 	"github.com/felinics/twilight/provider/anthropic/messages"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -883,6 +881,93 @@ func TestDoStream_Thinking(t *testing.T) {
 	}
 }
 
+// Stop reasons: https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons
+func TestFinishReasonMapping(t *testing.T) {
+	tests := []struct {
+		stopReason string
+		want       sdk.FinishReason
+	}{
+		{"end_turn", sdk.FinishReasonStop},
+		{"stop_sequence", sdk.FinishReasonStop},
+		{"tool_use", sdk.FinishReasonToolCalls},
+		{"max_tokens", sdk.FinishReasonLength},
+		{"model_context_window_exceeded", sdk.FinishReasonLength},
+		{"refusal", sdk.FinishReasonContentFilter},
+	}
+	for _, tt := range tests {
+		t.Run(tt.stopReason, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					Stream bool `json:"stream"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				if !body.Stream {
+					w.Header().Set("Content-Type", "application/json")
+					fmt.Fprintf(w, `{"id":"msg_fr","type":"message","model":"claude-sonnet-4-5","role":"assistant","content":[{"type":"text","text":"Hi"}],"stop_reason":%q,"usage":{"input_tokens":5,"output_tokens":1}}`, tt.stopReason)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				for _, e := range [][2]string{
+					{"message_start", `{"type":"message_start","message":{"id":"msg_fr","type":"message","model":"claude-sonnet-4-5","role":"assistant","content":[],"usage":{"input_tokens":5,"output_tokens":0}}}`},
+					{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+					{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}`},
+					{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+					{"message_delta", fmt.Sprintf(`{"type":"message_delta","delta":{"stop_reason":%q},"usage":{"output_tokens":1}}`, tt.stopReason)},
+					{"message_stop", `{"type":"message_stop"}`},
+				} {
+					fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e[0], e[1])
+				}
+			}))
+			defer srv.Close()
+
+			p := messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(srv.URL))
+			req := sdk.Request{
+				Model: "claude-sonnet-4-5",
+				Messages: []sdk.Message{{
+					Role:    sdk.MessageRoleUser,
+					Content: []sdk.MessagePart{sdk.TextPart{Text: "Hi"}},
+				}},
+			}
+
+			result, err := p.DoGenerate(context.Background(), req)
+			if err != nil {
+				t.Fatalf("DoGenerate failed: %v", err)
+			}
+			if result.FinishReason != tt.want || result.RawFinishReason != tt.stopReason {
+				t.Errorf("DoGenerate: finish reason %q (raw %q), want %q (raw %q)",
+					result.FinishReason, result.RawFinishReason, tt.want, tt.stopReason)
+			}
+
+			sr, err := p.DoStream(context.Background(), req)
+			if err != nil {
+				t.Fatalf("DoStream failed: %v", err)
+			}
+			var gotStep, gotFinish bool
+			for part := range sr {
+				switch p := part.(type) {
+				case *sdk.FinishStepPart:
+					gotStep = true
+					if p.FinishReason != tt.want || p.RawFinishReason != tt.stopReason {
+						t.Errorf("FinishStepPart: finish reason %q (raw %q), want %q (raw %q)",
+							p.FinishReason, p.RawFinishReason, tt.want, tt.stopReason)
+					}
+				case *sdk.FinishPart:
+					gotFinish = true
+					if p.FinishReason != tt.want || p.RawFinishReason != tt.stopReason {
+						t.Errorf("FinishPart: finish reason %q (raw %q), want %q (raw %q)",
+							p.FinishReason, p.RawFinishReason, tt.want, tt.stopReason)
+					}
+				case *sdk.ErrorPart:
+					t.Fatalf("error: %v", p.Error)
+				}
+			}
+			if !gotStep || !gotFinish {
+				t.Errorf("FinishStepPart seen %v, FinishPart seen %v, want both", gotStep, gotFinish)
+			}
+		})
+	}
+}
+
 func TestDoGenerate_ReasoningFromOtherProvider(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -1564,204 +1649,6 @@ func TestDoGenerate_ErrorResponse(t *testing.T) {
 	}
 }
 
-// ---------- integration tests ----------
-
-func envOrSkip(t *testing.T, key string) string {
-	t.Helper()
-	v := os.Getenv(key)
-	if v == "" {
-		t.Skipf("skipping: %s not set", key)
-	}
-	return v
-}
-
-func baseOpts(t *testing.T) []messages.Option {
-	t.Helper()
-	apiKey := envOrSkip(t, "ANTHROPIC_API_KEY")
-	opts := []messages.Option{}
-	if os.Getenv("ANTHROPIC_AUTH_MODE") == "bearer" {
-		opts = append(opts, messages.WithAuthToken(apiKey))
-	} else {
-		opts = append(opts, messages.WithAPIKey(apiKey))
-	}
-	if base := os.Getenv("ANTHROPIC_BASE_URL"); base != "" {
-		opts = append(opts, messages.WithBaseURL(base))
-	}
-	return opts
-}
-
-func newIntegrationProvider(t *testing.T) *messages.Provider {
-	t.Helper()
-	return messages.New(baseOpts(t)...)
-}
-
-func newReasoningProvider(t *testing.T) *messages.Provider {
-	t.Helper()
-	opts := baseOpts(t)
-	opts = append(opts, messages.WithThinking(messages.ThinkingConfig{
-		Type:         "enabled",
-		BudgetTokens: 4000,
-	}))
-	return messages.New(opts...)
-}
-
-func integrationModel(t *testing.T) *sdk.Model {
-	t.Helper()
-	m := os.Getenv("ANTHROPIC_MODEL")
-	if m == "" {
-		m = "claude-sonnet-4-20250514"
-	}
-	return &sdk.Model{ID: m}
-}
-
-func reasoningModel(t *testing.T) *sdk.Model {
-	t.Helper()
-	m := os.Getenv("ANTHROPIC_REASONING_MODEL")
-	if m == "" {
-		t.Skip("skipping: ANTHROPIC_REASONING_MODEL not set")
-	}
-	return &sdk.Model{ID: m}
-}
-
-func TestIntegration_DoGenerate(t *testing.T) {
-	p := newIntegrationProvider(t)
-	maxTokens := 100
-	result, err := p.DoGenerate(context.Background(), sdk.Request{
-		Model:     integrationModel(t).ID,
-		MaxTokens: &maxTokens,
-		Messages: []sdk.Message{{
-			Role:    sdk.MessageRoleUser,
-			Content: []sdk.MessagePart{sdk.TextPart{Text: "Say hello in one word."}},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("DoGenerate: %v", err)
-	}
-	t.Logf("text=%q finish=%s tokens=%d/%d", result.Text, result.FinishReason,
-		result.Usage.InputTokens, result.Usage.OutputTokens)
-
-	if result.Text == "" {
-		t.Error("expected non-empty text")
-	}
-}
-
-func TestIntegration_DoStream(t *testing.T) {
-	p := newIntegrationProvider(t)
-	maxTokens := 100
-	sr, err := p.DoStream(context.Background(), sdk.Request{
-		Model:     integrationModel(t).ID,
-		MaxTokens: &maxTokens,
-		Messages: []sdk.Message{{
-			Role:    sdk.MessageRoleUser,
-			Content: []sdk.MessagePart{sdk.TextPart{Text: "Count from 1 to 5."}},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("DoStream: %v", err)
-	}
-
-	var text string
-	for part := range sr {
-		switch p := part.(type) {
-		case *sdk.TextDeltaPart:
-			text += p.Text
-			t.Logf("text delta: %q", p.Text)
-		case *sdk.ErrorPart:
-			t.Fatalf("stream error: %v", p.Error)
-		case *sdk.FinishPart:
-			t.Logf("finish=%s", p.FinishReason)
-		}
-	}
-	t.Logf("streamed text: %q", text)
-	if text == "" {
-		t.Error("expected non-empty streamed text")
-	}
-}
-
-func TestIntegration_DoGenerate_Reasoning(t *testing.T) {
-	p := newReasoningProvider(t)
-	model := reasoningModel(t)
-	maxTokens := 8000
-	result, err := p.DoGenerate(context.Background(), sdk.Request{
-		Model:     model.ID,
-		MaxTokens: &maxTokens,
-		Messages: []sdk.Message{{
-			Role:    sdk.MessageRoleUser,
-			Content: []sdk.MessagePart{sdk.TextPart{Text: "What is 15 * 37? Think step by step."}},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("DoGenerate: %v", err)
-	}
-	t.Logf("model=%s", model.ID)
-	t.Logf("text=%q", result.Text)
-	t.Logf("reasoning=%q", result.Reasoning)
-	t.Logf("finish=%s tokens=%d/%d", result.FinishReason,
-		result.Usage.InputTokens, result.Usage.OutputTokens)
-
-	if result.Text == "" {
-		t.Error("expected non-empty text")
-	}
-	if result.Reasoning == "" {
-		t.Error("expected non-empty reasoning from thinking model")
-	}
-}
-
-func TestIntegration_DoStream_Reasoning(t *testing.T) {
-	p := newReasoningProvider(t)
-	model := reasoningModel(t)
-	maxTokens := 8000
-	sr, err := p.DoStream(context.Background(), sdk.Request{
-		Model:     model.ID,
-		MaxTokens: &maxTokens,
-		Messages: []sdk.Message{{
-			Role:    sdk.MessageRoleUser,
-			Content: []sdk.MessagePart{sdk.TextPart{Text: "What is 15 * 37? Think step by step."}},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("DoStream: %v", err)
-	}
-
-	var text, reasoning string
-	var gotReasoningStart, gotReasoningEnd bool
-	for part := range sr {
-		switch p := part.(type) {
-		case *sdk.ReasoningStartPart:
-			gotReasoningStart = true
-			t.Log("--- reasoning start ---")
-		case *sdk.ReasoningDeltaPart:
-			reasoning += p.Text
-		case *sdk.ReasoningEndPart:
-			gotReasoningEnd = true
-			t.Logf("--- reasoning end (len=%d) ---", len(reasoning))
-		case *sdk.TextDeltaPart:
-			text += p.Text
-		case *sdk.ErrorPart:
-			t.Fatalf("stream error: %v", p.Error)
-		case *sdk.FinishPart:
-			t.Logf("finish=%s total_usage=%+v", p.FinishReason, p.TotalUsage)
-		}
-	}
-
-	t.Logf("model=%s", model.ID)
-	t.Logf("streamed text: %q", text)
-	t.Logf("reasoning length: %d chars", len(reasoning))
-
-	if text == "" {
-		t.Error("expected non-empty streamed text")
-	}
-	if reasoning == "" {
-		t.Error("expected non-empty reasoning from thinking model")
-	}
-	if !gotReasoningStart {
-		t.Error("missing ReasoningStartPart")
-	}
-	if !gotReasoningEnd {
-		t.Error("missing ReasoningEndPart")
-	}
-}
-
 // ---------- ListModels / Test / TestModel unit tests ----------
 
 func TestListModels(t *testing.T) {
@@ -1817,9 +1704,8 @@ func TestProviderTest_OK(t *testing.T) {
 		messages.WithBaseURL(srv.URL),
 	)
 
-	result := p.Test(context.Background())
-	if result.Status != sdk.ProviderStatusOK {
-		t.Errorf("expected status OK, got %q", result.Status)
+	if err := p.Test(context.Background()); err != nil {
+		t.Errorf("Test() = %v, want nil", err)
 	}
 }
 
@@ -1835,9 +1721,9 @@ func TestProviderTest_Unhealthy(t *testing.T) {
 		messages.WithBaseURL(srv.URL),
 	)
 
-	result := p.Test(context.Background())
-	if result.Status != sdk.ProviderStatusUnhealthy {
-		t.Errorf("expected status Unhealthy, got %q", result.Status)
+	err := p.Test(context.Background())
+	if kind := sdk.KindOf(err); kind != sdk.KindAuthentication {
+		t.Errorf("KindOf(Test()) = %q, want %q (err %v)", kind, sdk.KindAuthentication, err)
 	}
 }
 
@@ -1847,9 +1733,9 @@ func TestProviderTest_Unreachable(t *testing.T) {
 		messages.WithBaseURL("http://127.0.0.1:1"),
 	)
 
-	result := p.Test(context.Background())
-	if result.Status != sdk.ProviderStatusUnreachable {
-		t.Errorf("expected status Unreachable, got %q", result.Status)
+	err := p.Test(context.Background())
+	if err == nil || sdk.KindOf(err) != sdk.KindUnknown {
+		t.Errorf("Test() = %v, want a transport error with no APIError Kind", err)
 	}
 }
 
@@ -2126,9 +2012,4 @@ func TestDoGenerate_ImagePartPublicURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGenerate failed: %v", err)
 	}
-}
-
-func TestMain(m *testing.M) {
-	testutil.LoadEnv()
-	os.Exit(m.Run())
 }

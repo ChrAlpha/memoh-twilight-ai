@@ -25,13 +25,42 @@ The `Client` carries the embedding, image, speech, transcription and video calls
 
 ---
 
+### Request Headers
+
+```go
+func WithRequestHeaders(ctx context.Context, headers map[string]string) context.Context
+```
+
+Returns a child context with a snapshot of the supplied HTTP headers. Names are
+case-insensitive; new values override inherited context values. Supported by
+Anthropic Messages, all OpenAI providers, Google Generative AI, GitHub Copilot
+and OpenCode Go. Use it for generation, streaming, model discovery and probes.
+Each conversation should use its own context for session IDs.
+
+Precedence: protocol defaults, provider `WithHeaders`, request-context headers.
+Required SSE headers, multipart boundaries and AWS signing are applied last.
+See [Custom HTTP Headers](providers.md#custom-http-headers) for usage.
+
+```go
+func WithClientRequestID(ctx context.Context, id string) context.Context
+```
+
+Returns a child context that sends `id` with each provider request made with it,
+so the provider can find a request that failed without a response. The OpenAI
+providers except Codex send `X-Client-Request-Id`, as do OpenCode Go (for models
+routed to Completions or Responses) and Ark video; GitHub Copilot sends
+`X-Request-Id`. Other providers do not send it. It overrides a request-context
+header of the same name; an empty `id` clears an inherited one. Use a new ID for
+every call. `GenerateVideo` sends it only with the create request. See
+[Client Request ID](providers.md#client-request-id).
+
 ### Provider
 
 ```go
 type Provider interface {
     Name() string
     ListModels(ctx context.Context) ([]Model, error)
-    Test(ctx context.Context) *ProviderTestResult
+    Test(ctx context.Context) error
     TestModel(ctx context.Context, modelID string) (*ModelTestResult, error)
     DoGenerate(ctx context.Context, req Request) (ModelResult, error)
     DoStream(ctx context.Context, req Request) (<-chan StreamPart, error)
@@ -42,30 +71,21 @@ type Provider interface {
 |--------|---------|
 | `Name()` | Returns a provider identifier (e.g. `"openai-completions"`) |
 | `ListModels(ctx)` | Fetches available models from the backend API |
-| `Test(ctx)` | Health check: returns OK, Unhealthy, or Unreachable |
+| `Test(ctx)` | Health check: `nil` when the provider is reachable and accepts the credentials, a `*APIError` when it rejected the check, any other error when it was not reached |
 | `TestModel(ctx, id)` | Checks if a specific model ID is supported |
 | `DoGenerate(ctx, req)` | Performs one non-streaming model call |
 | `DoStream(ctx, req)` | Performs one streaming model call |
 
-#### ProviderStatus
+A rejected credential is a `*APIError` whose `Kind` is `KindAuthentication` or `KindPermissionDenied`:
 
 ```go
-type ProviderStatus string
-
-const (
-    ProviderStatusOK          ProviderStatus = "ok"          // Connected and healthy
-    ProviderStatusUnhealthy   ProviderStatus = "unhealthy"   // Connected but health check failed
-    ProviderStatusUnreachable ProviderStatus = "unreachable" // Cannot connect
-)
-```
-
-#### ProviderTestResult
-
-```go
-type ProviderTestResult struct {
-    Status  ProviderStatus
-    Message string
-    Error   error
+if err := provider.Test(ctx); err != nil {
+    switch sdk.KindOf(err) {
+    case sdk.KindAuthentication, sdk.KindPermissionDenied:
+        // the key is wrong or lacks access
+    default:
+        // unreachable, or the provider failed the check for another reason
+    }
 }
 ```
 
@@ -77,6 +97,14 @@ type ModelTestResult struct {
     Message   string
 }
 ```
+
+#### ClassifyProbe
+
+```go
+func ClassifyProbe(err error) (*ModelTestResult, error)
+```
+
+Maps the outcome of a minimal generation request, for providers whose `TestModel` falls back to one when `GET /models/{id}` is unavailable. `err` is nil for a 2xx, a `*APIError` for any other status, or the transport error. A 2xx, 400, 422 or 429 returns `Supported: true`; a 404 returns `Supported: false`; anything else returns `err` unchanged, so a 401 or 403 stays a `*APIError`.
 
 ### Model
 
@@ -331,7 +359,7 @@ Every value a model or a provider produces has a closed type here: arguments and
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `FinishReasonStop` | `"stop"` | Normal completion |
-| `FinishReasonLength` | `"length"` | Max tokens reached |
+| `FinishReasonLength` | `"length"` | Max tokens or the context window reached |
 | `FinishReasonContentFilter` | `"content-filter"` | Content filter triggered |
 | `FinishReasonToolCalls` | `"tool-calls"` | Model wants to call tools |
 | `FinishReasonError` | `"error"` | An error occurred |
@@ -886,6 +914,7 @@ type SpeechStreamResult struct {
     ContentType string
 }
 
+func (r *SpeechStreamResult) Err() error
 func (r *SpeechStreamResult) Bytes() ([]byte, error)
 ```
 
@@ -893,7 +922,8 @@ func (r *SpeechStreamResult) Bytes() ([]byte, error)
 |-------|-------------|
 | `Stream` | Channel that yields raw audio chunks; closed when done |
 | `ContentType` | MIME type (e.g. `audio/mpeg`) |
-| `Bytes()` | Consumes the stream and returns concatenated audio data |
+| `Err()` | Error that ended the stream, or nil if it ended normally; call after `Stream` is closed |
+| `Bytes()` | Consumes the stream and returns concatenated audio data and `Err()` |
 
 #### Speech Options
 
@@ -978,13 +1008,13 @@ The Edge provider reads these keys from `SpeechParams.Config`:
 | `speed` | `float64` | `0` | Speech rate (1.0 = normal) |
 | `pitch` | `float64` | `0` | Pitch in Hz |
 
-#### Package-Level Variables
+#### Helper Functions
 
 ```go
-var EdgeTTSVoices map[string][]string  // language tag → voice IDs
+func Voices() map[string][]string
 ```
 
-#### Helper Functions
+Returns the voice catalog (language tag → voice IDs). Each call returns a new deep copy; modifying it does not affect the package.
 
 ```go
 func LookupVoiceLang(voiceID string) (string, bool)
@@ -1014,6 +1044,7 @@ type Option func(*Provider)
 func WithAPIKey(apiKey string) Option
 func WithBaseURL(baseURL string) Option
 func WithHTTPClient(client *http.Client) Option
+func WithHeaders(headers map[string]string) Option
 ```
 
 | Option | Default | Description |
@@ -1065,6 +1096,7 @@ type Option func(*Provider)
 func WithAPIKey(apiKey string) Option
 func WithBaseURL(baseURL string) Option
 func WithHTTPClient(client *http.Client) Option
+func WithHeaders(headers map[string]string) Option
 ```
 
 | Option | Default | Description |
@@ -1176,6 +1208,7 @@ type Option func(*Provider)
 func WithAPIKey(apiKey string) Option
 func WithBaseURL(baseURL string) Option
 func WithHTTPClient(client *http.Client) Option
+func WithHeaders(headers map[string]string) Option
 func WithMessageRoleCapabilities(capabilities sdk.MessageRoleCapabilities) Option
 func WithDeepSeekChatCompletionsCompat() Option
 func WithMiniMaxChatCompletionsCompat() Option
@@ -1204,7 +1237,7 @@ assistant history for later tool-call turns.
 func (p *Provider) Name() string                  // "openai-completions"
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
 func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
@@ -1238,6 +1271,7 @@ type Option func(*Provider)
 func WithAPIKey(apiKey string) Option
 func WithBaseURL(baseURL string) Option
 func WithHTTPClient(client *http.Client) Option
+func WithHeaders(headers map[string]string) Option
 ```
 
 #### Methods
@@ -1246,7 +1280,7 @@ func WithHTTPClient(client *http.Client) Option
 func (p *Provider) Name() string                  // "openai-responses"
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
 func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
@@ -1344,6 +1378,7 @@ func WithAccountID(accountID string) Option
 func WithOriginator(originator string) Option
 func WithBaseURL(baseURL string) Option
 func WithHTTPClient(client *http.Client) Option
+func WithHeaders(headers map[string]string) Option
 ```
 
 | Option | Default |
@@ -1359,7 +1394,7 @@ func WithHTTPClient(client *http.Client) Option
 func (p *Provider) Name() string                  // "openai-codex"
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
 func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
@@ -1399,3 +1434,51 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 | `response.completed` / `response.incomplete` | `FinishStepPart` + `FinishPart` |
 
 **Encrypted Reasoning**: When the model returns reasoning with encrypted content, it is preserved in `ReasoningStartPart.ProviderMetadata["openai"]["reasoningEncryptedContent"]` and round-tripped back via `ReasoningPart.ProviderMetadata` in follow-up turns.
+
+---
+
+## Package `provider/opencode/go`
+
+Package name: `opencodego`. Implements `sdk.Provider` by routing each model to
+Chat Completions, Responses or Anthropic Messages.
+
+```go
+type Protocol string
+const (
+    ProtocolCompletions Protocol = "openai-completions"
+    ProtocolResponses   Protocol = "openai-responses"
+    ProtocolMessages    Protocol = "anthropic-messages"
+)
+const SessionHeader = "x-opencode-session"
+
+type Option func(*Provider)
+func WithAPIKey(apiKey string) Option
+func WithBaseURL(baseURL string) Option
+func WithHTTPClient(client *http.Client) Option
+func WithHeaders(headers map[string]string) Option
+func WithModelProtocols(protocols map[string]Protocol) Option
+func New(options ...Option) *Provider
+
+func (p *Provider) Name() string // "opencode-go"
+func (p *Provider) ChatModel(id string) *sdk.Model
+func (p *Provider) ProtocolForModel(id string) (Protocol, error)
+func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
+func (p *Provider) Test(ctx context.Context) error
+func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
+```
+
+Default base URL: `https://opencode.ai/zen/go/v1`. Supply your application's
+User-Agent and a stable conversation ID through `sdk.WithRequestHeaders(ctx,
+map[string]string{opencodego.SessionHeader: conversationID})`.
+
+Models use Completions unless the SDK's small exception table, taken from the
+official endpoint table, routes them to Responses or Messages. `ListModels` is
+the live upstream list; it carries no protocol metadata, so a new model uses
+Completions until it is added to the table or registered with
+`WithModelProtocols`. `ProtocolForModel` returns an error only for an invalid
+protocol; names and prefixes are never used to guess a protocol.
+`Test` checks only public catalog reachability. `TestModel` performs a small,
+potentially billable generation request and requires the same request context as
+normal generation. See [OpenCode Go](providers.md#opencode-go-provider).

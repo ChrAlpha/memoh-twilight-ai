@@ -171,11 +171,12 @@ func WithHTTPClient(client *http.Client) Option {
 	}
 }
 
-// WithHeaders sets additional HTTP headers for requests.
+// WithHeaders sets provider-wide HTTP headers, overriding defaults. The map is
+// copied when the option is created. Use sdk.WithRequestHeaders for call-scoped
+// values such as session IDs; those take precedence over these headers.
 func WithHeaders(headers map[string]string) Option {
-	return func(p *Provider) {
-		p.headers = headers
-	}
+	headers = utils.MergeHeaders(headers)
+	return func(p *Provider) { p.headers = headers }
 }
 
 // WithThinking enables extended thinking for all requests made by this provider
@@ -281,10 +282,12 @@ func (p *Provider) Name() string {
 
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	resp, err := utils.FetchJSON[modelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Headers: p.requestHeaders(),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models",
+		Headers:     p.requestHeaders(ctx),
+		Provider:    p.Name(),
+		DecodeError: decodeError,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: list models request failed: %w", err)
@@ -302,50 +305,57 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	return models, nil
 }
 
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
+func (p *Provider) Test(ctx context.Context) error {
 	_, err := utils.FetchJSON[modelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Query:   map[string]string{"limit": "1"},
-		Headers: p.requestHeaders(),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models",
+		Query:       map[string]string{"limit": "1"},
+		Headers:     p.requestHeaders(ctx),
+		Provider:    p.Name(),
+		DecodeError: decodeError,
 	})
 	if err != nil {
-		return classifyError(err)
+		return fmt.Errorf("anthropic: test request failed: %w", err)
 	}
-	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
+	return nil
 }
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
 	_, err := utils.FetchJSON[anthropicModelObject](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models/" + modelID,
-		Headers: p.requestHeaders(),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models/" + modelID,
+		Headers:     p.requestHeaders(ctx),
+		Provider:    p.Name(),
+		DecodeError: decodeError,
 	})
 	if err == nil {
 		return &sdk.ModelTestResult{Supported: true, Message: "supported"}, nil
 	}
-	var apiErr *utils.APIError
+	var apiErr *sdk.APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 		return nil, fmt.Errorf("anthropic: test model request failed: %w", err)
 	}
 
-	status, probeErr := utils.ProbeStatus(ctx, p.httpClient, &utils.RequestOptions{
+	probeErr := utils.Probe(ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
 		Path:    "/messages",
-		Headers: p.requestHeaders(),
+		Headers: p.requestHeaders(ctx),
 		Body: map[string]any{
 			"model":      modelID,
 			"messages":   []map[string]string{{"role": "user", "content": "hi"}},
 			"max_tokens": 1,
 		},
+		Provider:    p.Name(),
+		DecodeError: decodeError,
 	})
-	if probeErr != nil {
-		return nil, fmt.Errorf("anthropic: probe model request failed: %w", probeErr)
+	result, err := sdk.ClassifyProbe(probeErr)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: probe model request failed: %w", err)
 	}
-	return sdk.ClassifyProbeStatus(status)
+	return result, nil
 }
 
 func (p *Provider) ChatModel(id string) *sdk.Model {
@@ -356,7 +366,7 @@ func (p *Provider) ChatModel(id string) *sdk.Model {
 	}
 }
 
-func (p *Provider) requestHeaders() map[string]string {
+func (p *Provider) requestHeaders(ctx context.Context) map[string]string {
 	h := map[string]string{
 		"anthropic-version": defaultAnthropicVer,
 		"Content-Type":      "application/json",
@@ -366,10 +376,7 @@ func (p *Provider) requestHeaders() map[string]string {
 	} else if p.apiKey != "" {
 		h["x-api-key"] = p.apiKey
 	}
-	for k, v := range p.headers {
-		h[k] = v
-	}
-	return h
+	return utils.RequestHeaders(ctx, h, p.headers)
 }
 
 // ---------- DoGenerate ----------
@@ -385,17 +392,15 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 	}
 
 	resp, err := utils.FetchJSON[messagesResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/messages",
-		Headers: p.requestHeaders(),
-		Body:    body,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/messages",
+		Headers:     p.requestHeaders(ctx),
+		Body:        body,
+		Provider:    p.Name(),
+		DecodeError: decodeError,
 	})
 	if err != nil {
-		var apiErr *utils.APIError
-		if errors.As(err, &apiErr) {
-			return sdk.ModelResult{}, fmt.Errorf("anthropic: messages request failed: %s", apiErr.Detail())
-		}
 		return sdk.ModelResult{}, fmt.Errorf("anthropic: messages request failed: %w", err)
 	}
 
@@ -855,6 +860,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		h := &streamHandler{
 			ch:           ch,
 			ctx:          ctx,
+			provider:     p.Name(),
 			activeBlocks: map[int]*streamingBlock{},
 		}
 
@@ -866,33 +872,30 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		}
 
 		err := utils.FetchSSE(ctx, p.httpClient, &utils.RequestOptions{
-			Method:  http.MethodPost,
-			BaseURL: p.baseURL,
-			Path:    "/messages",
-			Headers: p.requestHeaders(),
-			Body:    body,
+			Method:      http.MethodPost,
+			BaseURL:     p.baseURL,
+			Path:        "/messages",
+			Headers:     p.requestHeaders(ctx),
+			Body:        body,
+			Provider:    p.Name(),
+			DecodeError: decodeError,
 		}, h.handleEvent)
 
-		if err == nil {
-			err = ctx.Err()
+		// A complete stream ends with message_stop
+		// (https://platform.claude.com/docs/en/api/messages-streaming).
+		if err == nil && !h.done {
+			err = sdk.ErrStreamIncomplete
 		}
-		if err == nil && !h.failed && h.rawFinishReason == "" {
-			err = errors.New("stream ended without a stop reason")
-		}
-		if err != nil && !h.failed {
-			var apiErr *utils.APIError
-			if errors.As(err, &apiErr) {
-				h.send(&sdk.ErrorPart{Error: fmt.Errorf("anthropic: stream failed: %s", apiErr.Detail())})
-			} else {
-				h.send(&sdk.ErrorPart{Error: fmt.Errorf("anthropic: stream failed: %w", err)})
-			}
-		}
-
-		if err == nil && !h.failed && h.rawFinishReason != "" {
+		finish := h.finishReason
+		if err != nil {
+			h.send(&sdk.ErrorPart{Error: fmt.Errorf("anthropic: stream failed: %w", err)})
+			finish = sdk.FinishReasonError
+		} else {
 			h.emitFinishStep()
 		}
+
 		h.send(&sdk.FinishPart{
-			FinishReason:    h.finishReason,
+			FinishReason:    finish,
 			RawFinishReason: h.rawFinishReason,
 			TotalUsage:      h.usage,
 		})
@@ -904,13 +907,15 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 type streamHandler struct {
 	ch           chan sdk.StreamPart
 	ctx          context.Context
+	provider     string
 	activeBlocks map[int]*streamingBlock
+	// done is set by message_stop, the event that ends a complete stream.
+	done bool
 
 	rawFinishReason string
 	finishReason    sdk.FinishReason
 	usage           sdk.Usage
 	rawUsage        messagesUsage
-	failed          bool
 	messageID       string
 	messageModel    string
 }
@@ -927,9 +932,7 @@ func (h *streamHandler) send(part sdk.StreamPart) bool {
 func (h *streamHandler) handleEvent(ev *utils.SSEEvent) error {
 	var event streamEvent
 	if err := json.Unmarshal([]byte(ev.Data), &event); err != nil {
-		h.failed = true
-		h.send(&sdk.ErrorPart{Error: fmt.Errorf("anthropic: unmarshal event: %w", err)})
-		return err
+		return fmt.Errorf("unmarshal event: %w", err)
 	}
 
 	switch event.Type {
@@ -944,11 +947,15 @@ func (h *streamHandler) handleEvent(ev *utils.SSEEvent) error {
 	case "message_delta":
 		h.onMessageDelta(&event)
 	case "message_stop":
+		h.done = true
 		return utils.ErrStreamDone
 	case "ping":
 		// ignore
 	case "error":
-		h.onError(&event)
+		// The event's data is the error body of an HTTP error, sent after
+		// the 200 status line
+		// (https://platform.claude.com/docs/en/api/messages-streaming#error-events).
+		return utils.NewBodyError(h.provider, ev.Header, []byte(ev.Data), decodeError)
 	}
 	return nil
 }
@@ -1095,15 +1102,6 @@ func (h *streamHandler) emitFinishStep() {
 	})
 }
 
-func (h *streamHandler) onError(event *streamEvent) {
-	h.failed = true
-	errMsg := "unknown error"
-	if event.Delta != nil && event.Delta.Text != "" {
-		errMsg = event.Delta.Text
-	}
-	h.send(&sdk.ErrorPart{Error: fmt.Errorf("anthropic: stream error: %s", errMsg)})
-}
-
 // streamingBlock accumulates one content block's deltas. args and signature
 // grow by one small delta per SSE event, so they use strings.Builder — plain
 // string concatenation would copy the accumulated prefix on every event,
@@ -1162,14 +1160,20 @@ func convertUsage(u *messagesUsage) sdk.Usage {
 	}
 }
 
+// mapFinishReason maps a stop_reason
+// (https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons).
+// model_context_window_exceeded truncates the response as max_tokens does, and
+// refusal is a response the safety classifiers stopped.
 func mapFinishReason(reason string) sdk.FinishReason {
 	switch reason {
 	case "end_turn", "stop_sequence":
 		return sdk.FinishReasonStop
 	case "tool_use":
 		return sdk.FinishReasonToolCalls
-	case "max_tokens":
+	case "max_tokens", "model_context_window_exceeded":
 		return sdk.FinishReasonLength
+	case "refusal":
+		return sdk.FinishReasonContentFilter
 	default:
 		return sdk.FinishReasonUnknown
 	}
@@ -1190,27 +1194,4 @@ func signatureOf(meta sdk.ProviderMetadata) string {
 // redactedDataOf returns the encrypted payload of a redacted thinking block.
 func redactedDataOf(meta sdk.ProviderMetadata) string {
 	return meta.Get(metadataNamespace, metadataKeyRedactedData)
-}
-
-func classifyError(err error) *sdk.ProviderTestResult {
-	var apiErr *utils.APIError
-	if errors.As(err, &apiErr) {
-		if apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden {
-			return &sdk.ProviderTestResult{
-				Status:  sdk.ProviderStatusUnhealthy,
-				Message: fmt.Sprintf("authentication failed: %s", apiErr.Message),
-				Error:   err,
-			}
-		}
-		return &sdk.ProviderTestResult{
-			Status:  sdk.ProviderStatusUnhealthy,
-			Message: fmt.Sprintf("service error (%d): %s", apiErr.StatusCode, apiErr.Message),
-			Error:   err,
-		}
-	}
-	return &sdk.ProviderTestResult{
-		Status:  sdk.ProviderStatusUnreachable,
-		Message: fmt.Sprintf("connection failed: %s", err.Error()),
-		Error:   err,
-	}
 }

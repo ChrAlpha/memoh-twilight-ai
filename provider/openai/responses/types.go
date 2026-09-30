@@ -252,23 +252,13 @@ type responsesCompletedChunk struct {
 	} `json:"response"`
 }
 
-// responsesFailedChunk is sent for event: response.failed.
+// responsesFailedChunk is sent for event: response.failed. Its error object is
+// decoded by errorformat.DecodeOpenAIFailedEvent.
 type responsesFailedChunk struct {
 	Type     string `json:"type"`
 	Response struct {
-		Error *responsesError `json:"error,omitempty"`
 		Usage *responsesUsage `json:"usage,omitempty"`
 	} `json:"response"`
-}
-
-// responsesErrorChunk is sent for event: error
-type responsesErrorChunk struct {
-	Type  string `json:"type"`
-	Error struct {
-		Type    string `json:"type"`
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
 }
 
 // --- Models API response types ---

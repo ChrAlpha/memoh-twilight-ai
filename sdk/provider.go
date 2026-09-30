@@ -2,25 +2,9 @@ package sdk
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net/http"
 )
-
-// ProviderStatus represents the health status of a provider.
-type ProviderStatus string
-
-const (
-	ProviderStatusOK          ProviderStatus = "ok"
-	ProviderStatusUnhealthy   ProviderStatus = "unhealthy"
-	ProviderStatusUnreachable ProviderStatus = "unreachable"
-)
-
-// ProviderTestResult holds the result of a provider health check.
-type ProviderTestResult struct {
-	Status  ProviderStatus
-	Message string
-	Error   error
-}
 
 // ModelTestResult holds the result of a model support check.
 type ModelTestResult struct {
@@ -28,27 +12,44 @@ type ModelTestResult struct {
 	Message   string
 }
 
-// ClassifyProbeStatus maps an HTTP status code from a minimal generation
-// request to a ModelTestResult. Providers use this as a fallback when the
-// models listing API (GET /models/{id}) is unavailable.
-func ClassifyProbeStatus(statusCode int) (*ModelTestResult, error) {
-	switch {
-	case statusCode >= 200 && statusCode <= 299:
+// ClassifyProbe maps the outcome of a minimal generation request to a
+// ModelTestResult. Providers use it as a fallback when the models listing API
+// (GET /models/{id}) is unavailable. err is what the probe request returned:
+// nil for a 2xx response, a *APIError for any other status, or the transport
+// error.
+//
+// A 2xx, 400, 422 or 429 response means the provider accepted the model, and
+// a 404 means it does not know it; both return a result and a nil error. Any
+// other outcome returns err unchanged, so a rejected credential is a *APIError
+// whose Kind is KindAuthentication or KindPermissionDenied.
+func ClassifyProbe(err error) (*ModelTestResult, error) {
+	if err == nil {
 		return &ModelTestResult{Supported: true, Message: "supported"}, nil
-	case statusCode == http.StatusBadRequest,
-		statusCode == http.StatusUnprocessableEntity,
-		statusCode == http.StatusTooManyRequests:
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return nil, err
+	}
+	switch apiErr.StatusCode {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity, http.StatusTooManyRequests:
 		return &ModelTestResult{Supported: true, Message: "supported"}, nil
-	case statusCode == http.StatusNotFound:
+	case http.StatusNotFound:
 		return &ModelTestResult{Supported: false, Message: "model not found"}, nil
-	case statusCode == http.StatusUnauthorized, statusCode == http.StatusForbidden:
-		return nil, fmt.Errorf("authentication failed (HTTP %d)", statusCode)
 	default:
-		return nil, fmt.Errorf("unexpected status %d", statusCode)
+		return nil, err
 	}
 }
 
 // Provider is the interface that AI backends must implement.
+//
+// Test checks that the provider is reachable and, where the provider's check
+// needs them, that it accepts the configured credentials. nil means the check
+// passed; a provider whose check calls a public endpoint documents that nil only
+// establishes reachability. A *APIError in the returned chain means the provider
+// was reached and rejected the check; its Kind tells a rejected credential
+// (KindAuthentication, KindPermissionDenied) from other failures. Any other
+// error means the check did not reach the provider, for example a transport
+// failure or an ended context, which stays in the chain.
 //
 // DoGenerate and DoStream are the seam between the SDK and a backend, and they
 // speak the single-call boundary: a Request goes in, and a ModelResult or a
@@ -62,7 +63,7 @@ func ClassifyProbeStatus(statusCode int) (*ModelTestResult, error) {
 type Provider interface {
 	Name() string
 	ListModels(ctx context.Context) ([]Model, error)
-	Test(ctx context.Context) *ProviderTestResult
+	Test(ctx context.Context) error
 	TestModel(ctx context.Context, modelID string) (*ModelTestResult, error)
 	DoGenerate(ctx context.Context, req Request) (ModelResult, error)
 	DoStream(ctx context.Context, req Request) (<-chan StreamPart, error)

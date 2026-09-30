@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
 	sdk "github.com/felinics/twilight/sdk"
 )
@@ -19,9 +20,20 @@ import (
 const (
 	defaultModelID = "gpt-4o-mini-transcribe"
 	defaultBaseURL = "https://api.openai.com/v1"
+
+	// providerName identifies this package in APIError.Provider.
+	providerName = "openai-transcription"
 )
 
 type Option func(*Provider)
+
+// WithHeaders sets provider-wide HTTP headers, overriding defaults. The map is
+// copied when the option is created. Use sdk.WithRequestHeaders for call-scoped
+// values such as session IDs; those take precedence over these headers.
+func WithHeaders(headers map[string]string) Option {
+	headers = utils.MergeHeaders(headers)
+	return func(p *Provider) { p.headers = headers }
+}
 
 func WithAPIKey(key string) Option { return func(p *Provider) { p.apiKey = key } }
 func WithBaseURL(url string) Option {
@@ -30,6 +42,7 @@ func WithBaseURL(url string) Option {
 func WithHTTPClient(hc *http.Client) Option { return func(p *Provider) { p.httpClient = hc } }
 
 type Provider struct {
+	headers    map[string]string
 	apiKey     string
 	baseURL    string
 	httpClient *http.Client
@@ -55,7 +68,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.TranscriptionModel, e
 	if err != nil {
 		return nil, fmt.Errorf("openai transcription: build list models request: %w", err)
 	}
-	req.Header.Set("Authorization", utils.BearerToken(p.apiKey))
+	utils.SetHeaders(req, p.requestHeaders(ctx))
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -63,8 +76,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.TranscriptionModel, e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openai transcription: unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("openai transcription: list models: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeOpenAI))
 	}
 
 	rawModels, err := decodeModelIDs(resp.Body)
@@ -142,8 +154,8 @@ func (p *Provider) DoTranscribe(ctx context.Context, params sdk.TranscriptionPar
 	if err != nil {
 		return nil, fmt.Errorf("openai transcription: build request: %w", err)
 	}
+	utils.SetHeaders(req, p.requestHeaders(ctx))
 	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("Authorization", utils.BearerToken(p.apiKey))
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -151,8 +163,7 @@ func (p *Provider) DoTranscribe(ctx context.Context, params sdk.TranscriptionPar
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openai transcription: unexpected status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("openai transcription: transcribe: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeOpenAI))
 	}
 
 	return decodeResponse(resp.Body)
@@ -268,4 +279,9 @@ func decodeResponse(r io.Reader) (*sdk.TranscriptionResult, error) {
 		return nil, fmt.Errorf("openai transcription: decode response: %w", err)
 	}
 	return &sdk.TranscriptionResult{Text: simple.Text}, nil
+}
+
+func (p *Provider) requestHeaders(ctx context.Context) map[string]string {
+	headers := utils.RequestHeaders(ctx, utils.AuthHeader(p.apiKey), p.headers)
+	return utils.AddClientRequestID(ctx, headers, utils.ClientRequestIDHeader)
 }

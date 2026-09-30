@@ -24,6 +24,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/felinics/twilight/internal/errorformat"
+	"github.com/felinics/twilight/internal/utils"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
@@ -48,8 +50,8 @@ func (c *wsClient) dial(ctx context.Context) (*websocket.Conn, error) {
 	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, c.baseURL, h)
 	if err != nil {
 		if resp != nil {
-			_ = resp.Body.Close()
-			return nil, fmt.Errorf("alibabacloud speech: ws dial: status=%d: %w", resp.StatusCode, err)
+			defer resp.Body.Close()
+			return nil, fmt.Errorf("alibabacloud speech: ws dial: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeDashScope))
 		}
 		return nil, fmt.Errorf("alibabacloud speech: ws dial: %w", err)
 	}
@@ -96,7 +98,7 @@ func (c *wsClient) synthesize(ctx context.Context, text string, cfg *audioConfig
 			if err != nil {
 				continue
 			}
-			switch event {
+			switch event.Event {
 			case "task-started":
 				if err := c.sendContinueTask(conn, taskID, text); err != nil {
 					return nil, err
@@ -109,7 +111,7 @@ func (c *wsClient) synthesize(ctx context.Context, text string, cfg *audioConfig
 				return audioOut, nil
 
 			case "task-failed":
-				return nil, fmt.Errorf("alibabacloud speech: task-failed: %s", string(data))
+				return nil, fmt.Errorf("alibabacloud speech: task failed: %w", taskFailedError(event, data))
 			}
 		}
 	}
@@ -172,7 +174,7 @@ func (c *wsClient) stream(ctx context.Context, text string, cfg *audioConfig) (c
 				if err != nil {
 					continue
 				}
-				switch event {
+				switch event.Event {
 				case "task-started":
 					if err := c.sendContinueTask(conn, taskID, text); err != nil {
 						errChan <- err
@@ -187,7 +189,7 @@ func (c *wsClient) stream(ctx context.Context, text string, cfg *audioConfig) (c
 					return
 
 				case "task-failed":
-					errChan <- fmt.Errorf("alibabacloud speech: task-failed: %s", string(data))
+					errChan <- fmt.Errorf("alibabacloud speech: task failed: %w", taskFailedError(event, data))
 					return
 				}
 			}
@@ -262,19 +264,6 @@ func (c *wsClient) sendFinishTask(conn *websocket.Conn, taskID string) error {
 		},
 	}
 	return writeJSON(conn, cmd)
-}
-
-// parseEvent extracts the event name from a DashScope server message.
-func parseEvent(data []byte) (string, error) {
-	var msg struct {
-		Header struct {
-			Event string `json:"event"`
-		} `json:"header"`
-	}
-	if err := json.Unmarshal(data, &msg); err != nil {
-		return "", err
-	}
-	return msg.Header.Event, nil
 }
 
 func writeJSON(conn *websocket.Conn, v any) error {

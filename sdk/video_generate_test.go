@@ -3,9 +3,12 @@ package sdk
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/felinics/twilight/internal/reqheaders"
 )
 
 func TestCreateVideoValidation(t *testing.T) {
@@ -56,6 +59,28 @@ func TestGenerateVideoPollsUntilSucceeded(t *testing.T) {
 	}
 }
 
+func TestGenerateVideoSendsClientRequestIDOnlyWithCreate(t *testing.T) {
+	prov := &fakeVideoProvider{
+		createJob:    &VideoJob{ID: "job-1", Status: VideoJobQueued},
+		getJobs:      []*VideoJob{{ID: "job-1", Status: VideoJobSucceeded, Outputs: []VideoOutput{{URL: "https://example.com/out.mp4"}}}},
+		downloadData: []byte("video"),
+	}
+	ctx := WithClientRequestID(context.Background(), "client-id")
+	if _, err := GenerateVideo(ctx,
+		WithVideoModel(testVideoModel(prov)),
+		WithVideoPrompt("make a clip"),
+		WithVideoPollInterval(time.Millisecond),
+		WithVideoPollTimeout(time.Second),
+		WithVideoDownload(true),
+	); err != nil {
+		t.Fatalf("GenerateVideo returned error: %v", err)
+	}
+	// Create, one poll, download.
+	if want := []string{"client-id", "", ""}; !slices.Equal(prov.clientRequestIDs, want) {
+		t.Fatalf("client request IDs = %q, want %q", prov.clientRequestIDs, want)
+	}
+}
+
 func TestGenerateVideoTimeout(t *testing.T) {
 	prov := &fakeVideoProvider{
 		createJob: &VideoJob{ID: "job-1", Status: VideoJobQueued},
@@ -68,8 +93,31 @@ func TestGenerateVideoTimeout(t *testing.T) {
 		WithVideoPollInterval(time.Millisecond),
 		WithVideoPollTimeout(3*time.Millisecond),
 	)
-	if err == nil || !strings.Contains(err.Error(), "timed out") {
-		t.Fatalf("expected timeout error, got %v", err)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected an error wrapping context.DeadlineExceeded, got %v", err)
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		t.Fatalf("a poll timeout is not a provider failure, got APIError %+v", apiErr)
+	}
+}
+
+func TestGenerateVideoCanceled(t *testing.T) {
+	prov := &fakeVideoProvider{
+		createJob: &VideoJob{ID: "job-1", Status: VideoJobQueued},
+		getJobs:   []*VideoJob{{ID: "job-1", Status: VideoJobRunning}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := GenerateVideo(ctx,
+		WithVideoModel(testVideoModel(prov)),
+		WithVideoPrompt("make a clip"),
+		WithVideoPollInterval(time.Hour),
+		WithVideoPollTimeout(time.Hour),
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected an error wrapping context.Canceled, got %v", err)
 	}
 }
 
@@ -77,7 +125,7 @@ func TestGenerateVideoFailedStatus(t *testing.T) {
 	prov := &fakeVideoProvider{
 		createJob: &VideoJob{ID: "job-1", Status: VideoJobQueued},
 		getJobs: []*VideoJob{
-			{ID: "job-1", Status: VideoJobFailed, Error: &VideoError{Message: "blocked"}},
+			{ID: "job-1", Status: VideoJobFailed, Error: &VideoError{Code: "QuotaExceeded", Message: "blocked", Kind: KindQuotaExhausted}},
 		},
 	}
 
@@ -90,8 +138,55 @@ func TestGenerateVideoFailedStatus(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "blocked") {
 		t.Fatalf("expected failed status error, got %v", err)
 	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %T %v", err, err)
+	}
+	if apiErr.Provider != "fake-videos" || apiErr.StatusCode != 0 || apiErr.Code != "QuotaExceeded" ||
+		apiErr.Message != "blocked" || apiErr.Kind != KindQuotaExhausted {
+		t.Fatalf("APIError = %+v, want provider fake-videos, status 0, code QuotaExceeded, message blocked, kind quota_exhausted", apiErr)
+	}
 	if result == nil || result.Job.Status != VideoJobFailed {
 		t.Fatalf("expected failed result, got %#v", result)
+	}
+}
+
+func TestGenerateVideoFailedWithoutPayload(t *testing.T) {
+	prov := &fakeVideoProvider{
+		createJob: &VideoJob{ID: "job-1", Status: VideoJobQueued},
+		getJobs:   []*VideoJob{{ID: "job-1", Status: VideoJobFailed}},
+	}
+
+	_, err := GenerateVideo(context.Background(),
+		WithVideoModel(testVideoModel(prov)),
+		WithVideoPrompt("make a clip"),
+		WithVideoPollInterval(time.Millisecond),
+		WithVideoPollTimeout(time.Second),
+	)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %T %v", err, err)
+	}
+	if apiErr.StatusCode != 0 || apiErr.Kind != KindUnknown {
+		t.Fatalf("APIError = %+v, want status 0 and kind unknown", apiErr)
+	}
+}
+
+func TestGenerateVideoCanceledStatusIsNotAPIError(t *testing.T) {
+	prov := &fakeVideoProvider{
+		createJob: &VideoJob{ID: "job-1", Status: VideoJobQueued},
+		getJobs:   []*VideoJob{{ID: "job-1", Status: VideoJobCanceled}},
+	}
+
+	_, err := GenerateVideo(context.Background(),
+		WithVideoModel(testVideoModel(prov)),
+		WithVideoPrompt("make a clip"),
+		WithVideoPollInterval(time.Millisecond),
+		WithVideoPollTimeout(time.Second),
+	)
+	var apiErr *APIError
+	if err == nil || errors.As(err, &apiErr) {
+		t.Fatalf("expected a plain error for a canceled job, got %v", err)
 	}
 }
 
@@ -104,17 +199,24 @@ type fakeVideoProvider struct {
 	getJobs      []*VideoJob
 	getCalls     int
 	downloadData []byte
+	// clientRequestIDs records the client request ID each call's context
+	// carried, in call order.
+	clientRequestIDs []string
 }
+
+func (p *fakeVideoProvider) Name() string { return "fake-videos" }
 
 func (p *fakeVideoProvider) ListModels(context.Context) ([]*VideoModel, error) {
 	return nil, nil
 }
 
-func (p *fakeVideoProvider) DoCreate(context.Context, VideoParams) (*VideoJob, error) {
+func (p *fakeVideoProvider) DoCreate(ctx context.Context, _ VideoParams) (*VideoJob, error) {
+	p.clientRequestIDs = append(p.clientRequestIDs, reqheaders.ClientRequestID(ctx))
 	return p.createJob, nil
 }
 
-func (p *fakeVideoProvider) DoGet(context.Context, *VideoModel, string) (*VideoJob, error) {
+func (p *fakeVideoProvider) DoGet(ctx context.Context, _ *VideoModel, _ string) (*VideoJob, error) {
+	p.clientRequestIDs = append(p.clientRequestIDs, reqheaders.ClientRequestID(ctx))
 	if len(p.getJobs) == 0 {
 		return nil, errors.New("no jobs configured")
 	}
@@ -130,6 +232,7 @@ func (p *fakeVideoProvider) DoCancel(context.Context, *VideoModel, string) error
 	return nil
 }
 
-func (p *fakeVideoProvider) DoDownload(context.Context, *VideoModel, VideoOutput) ([]byte, string, error) {
+func (p *fakeVideoProvider) DoDownload(ctx context.Context, _ *VideoModel, _ VideoOutput) ([]byte, string, error) {
+	p.clientRequestIDs = append(p.clientRequestIDs, reqheaders.ClientRequestID(ctx))
 	return p.downloadData, "video/mp4", nil
 }

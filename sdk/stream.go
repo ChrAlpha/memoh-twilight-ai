@@ -1,5 +1,7 @@
 package sdk
 
+import "errors"
+
 type StreamPartType string
 
 const (
@@ -160,8 +162,22 @@ type FinishStepPart struct {
 
 func (p *FinishStepPart) Type() StreamPartType { return StreamPartTypeFinishStep }
 
+// ErrorPart reports that the stream failed. A stream carries at most one
+// ErrorPart. The FinishPart that closes a failed stream follows it, with
+// FinishReasonError and the usage reported before the failure.
+//
+// Error is an *APIError when the provider reported the failure, including in
+// an error event after the stream started (StatusCode 0), and wraps
+// ErrStreamIncomplete when the stream ended before its terminal event.
 type ErrorPart struct {
 	Error error
 }
 
 func (p *ErrorPart) Type() StreamPartType { return StreamPartTypeError }
+
+// ErrStreamIncomplete reports that a provider's stream ended without a
+// transport error but before the event that marks a complete response, such
+// as Anthropic's message_stop or the Responses API's response.completed. The
+// parts received before it are a truncated response. Test for it with
+// errors.Is.
+var ErrStreamIncomplete = errors.New("twilightai: stream ended before its terminal event")

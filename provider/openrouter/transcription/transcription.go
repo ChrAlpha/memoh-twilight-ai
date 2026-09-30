@@ -11,8 +11,13 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
+	"github.com/felinics/twilight/internal/utils"
 	sdk "github.com/felinics/twilight/sdk"
 )
+
+// providerName identifies this package in APIError.Provider.
+const providerName = "openrouter-transcription"
 
 const (
 	defaultModelID = "openai/gpt-4o-mini-transcribe"
@@ -61,8 +66,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.TranscriptionModel, e
 	}
 	defer httpResp.Body.Close()
 	if httpResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(httpResp.Body)
-		return nil, fmt.Errorf("openrouter transcription: unexpected status %d: %s", httpResp.StatusCode, string(body))
+		return nil, fmt.Errorf("openrouter transcription: list models: %w", utils.NewHTTPError(providerName, httpResp, errorformat.DecodeOpenRouter))
 	}
 	rawModels, err := decodeOpenRouterModels(httpResp.Body)
 	if err != nil {
@@ -182,8 +186,7 @@ func (p *Provider) DoTranscribe(ctx context.Context, params sdk.TranscriptionPar
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openrouter transcription: unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("openrouter transcription: transcribe: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeOpenRouter))
 	}
 
 	var payload struct {

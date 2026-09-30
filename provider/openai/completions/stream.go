@@ -25,6 +25,11 @@ type streamProcessor struct {
 	pendingToolCalls   map[int]*streamingToolCall
 	reasoningDetails   []chatReasoningDetail
 	reasoningText      strings.Builder
+	// done is set by the chunk that carries a finish_reason or by the [DONE]
+	// sentinel that follows it
+	// (https://platform.openai.com/docs/api-reference/chat-streaming); either
+	// one means the response is complete.
+	done bool
 }
 
 func (sp *streamProcessor) send(part sdk.StreamPart) bool {
@@ -229,6 +234,7 @@ func (sp *streamProcessor) processFinishReason(choice *chatChunkChoice) {
 	}
 	sp.rawFinishReason = *choice.FinishReason
 	sp.finishReason = mapFinishReason(sp.rawFinishReason)
+	sp.done = true
 
 	sp.flush()
 

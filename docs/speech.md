@@ -86,6 +86,11 @@ for chunk := range sr.Stream {
     // Write each chunk to an audio player, file, or HTTP response
     writer.Write(chunk)
 }
+if err := sr.Err(); err != nil {
+    // The stream ended early. A provider failure is an *sdk.APIError;
+    // a failure frame on a WebSocket stream has StatusCode 0.
+    log.Fatal(err)
+}
 ```
 
 Or use the convenience method to collect all audio:
@@ -150,13 +155,13 @@ The Edge provider reads these keys from `WithSpeechConfig`:
 
 ### Voices
 
-Edge TTS supports 400+ voices across 100+ languages. Use `speech.EdgeTTSVoices` to browse the full catalog:
+Edge TTS supports 400+ voices across 100+ languages. Use `speech.Voices()` to browse the full catalog. It returns a copy, so modifying the result does not affect the package:
 
 ```go
 import "github.com/felinics/twilight/provider/edge/speech"
 
 // Map of language tag → voice IDs
-for lang, voices := range speech.EdgeTTSVoices {
+for lang, voices := range speech.Voices() {
     fmt.Printf("%s: %v\n", lang, voices)
 }
 
@@ -463,6 +468,9 @@ func handleTTS(w http.ResponseWriter, r *http.Request) {
         if f, ok := w.(http.Flusher); ok {
             f.Flush()
         }
+    }
+    if err := sr.Err(); err != nil {
+        log.Printf("tts stream: %v", err)
     }
 }
 ```

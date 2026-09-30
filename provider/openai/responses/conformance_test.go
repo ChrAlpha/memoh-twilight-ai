@@ -28,6 +28,19 @@ const (
 	conformanceCreatedAt = 1700000000
 )
 
+// conformanceErrorBody is OpenAI's 401 response as recorded in the official
+// .NET SDK: https://github.com/openai/openai-dotnet/blob/4e5ae90621089e0b1f5571546a75cea6b0cc713f/tests/SessionRecords/ChatTests/AuthFailure.json
+const conformanceErrorBody = `{
+  "error": {
+    "message": "Incorrect API key provided: not-a-re**************************ized. You can find your API key at https://platform.openai.com/account/api-keys.",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": "invalid_api_key"
+  }
+}`
+
+const conformanceRequestID = "req_conformance_401"
+
 func conformanceProvider(baseURL string) sdk.Provider {
 	return responses.New(responses.WithAPIKey("test-key"), responses.WithBaseURL(baseURL))
 }
@@ -84,9 +97,50 @@ func textFixture(t *testing.T) providertest.Fixture {
 		},
 		ReplyError: func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("x-request-id", conformanceRequestID)
 			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":{"message":"invalid api key"}}`))
+			_, _ = w.Write([]byte(conformanceErrorBody))
 		},
+		WantError: &sdk.APIError{
+			Provider:   "openai-responses",
+			StatusCode: http.StatusUnauthorized,
+			Type:       "invalid_request_error",
+			Code:       "invalid_api_key",
+			Message:    "Incorrect API key provided: not-a-re**************************ized. You can find your API key at https://platform.openai.com/account/api-keys.",
+			RequestID:  conformanceRequestID,
+			Kind:       sdk.KindAuthentication,
+		},
+		// A failed response carries the same error object in the 2xx body of
+		// a non-streaming request and in the response.failed event of a
+		// stream (https://platform.openai.com/docs/api-reference/responses/object).
+		ReplyErrorBody: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("x-request-id", conformanceRequestID)
+			_, _ = w.Write([]byte(`{"id":"resp_conf_failed","object":"response","status":"failed","model":"` + conformanceModel + `",` +
+				`"error":{"code":"server_error","message":"The model failed to generate a response."},"output":[]}`))
+		},
+		ReplyErrorEvent: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("x-request-id", conformanceRequestID)
+			sseEvents(w,
+				[2]string{"response.created", `{"type":"response.created","response":{"id":"resp_conf_failed","created_at":1700000000,"model":"` + conformanceModel + `"}}`},
+				[2]string{"response.failed", `{"type":"response.failed","sequence_number":1,"response":{"id":"resp_conf_failed","status":"failed",` +
+					`"error":{"code":"server_error","message":"The model failed to generate a response."},"usage":null}}`},
+			)
+		},
+		WantInBandError: &sdk.APIError{
+			Provider:  "openai-responses",
+			Code:      "server_error",
+			Message:   "The model failed to generate a response.",
+			RequestID: conformanceRequestID,
+			Kind:      sdk.KindServerError,
+		},
+		ReplyStreamIncomplete: func(w http.ResponseWriter, r *http.Request) {
+			sseEvents(w,
+				[2]string{"response.created", `{"type":"response.created","response":{"id":"resp_conf_text","created_at":1700000000,"model":"` + conformanceModel + `"}}`},
+				[2]string{"response.output_text.delta", `{"type":"response.output_text.delta","item_id":"msg_conf_text","delta":"conformance"}`},
+			)
+		},
+		Secret: "test-key",
 		Want: providertest.Want{
 			Text:         "conformance text",
 			FinishReason: sdk.FinishReasonStop,

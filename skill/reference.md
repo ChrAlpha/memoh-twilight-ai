@@ -11,6 +11,7 @@ Use it when the task needs exact package names, exported types, function signatu
 - `github.com/felinics/twilight/provider/openai/responses`
 - `github.com/felinics/twilight/provider/anthropic/messages`
 - `github.com/felinics/twilight/provider/google/generativeai`
+- `github.com/felinics/twilight/provider/opencode/go`
 - `github.com/felinics/twilight/provider/openai/codex`
 - `github.com/felinics/twilight/provider/openai/images`
 - `github.com/felinics/twilight/provider/openai/embedding`
@@ -45,36 +46,59 @@ Behavior notes:
   `ToolCalls` and appends the step's assistant and tool messages to the next
   `Request`.
 
+### Request Headers
+
+```go
+func WithRequestHeaders(ctx context.Context, headers map[string]string) context.Context
+```
+
+Returns a child context with a snapshot of the supplied HTTP headers. Names are
+case-insensitive; new values override inherited context values. Supported by
+Anthropic Messages, all OpenAI providers, Google Generative AI, GitHub Copilot
+and OpenCode Go. Use it for generation, streaming, model discovery and probes.
+Each conversation should use its own context for session IDs.
+
+Precedence: protocol defaults, provider `WithHeaders`, request-context headers.
+Required SSE headers, multipart boundaries and AWS signing are applied last.
+See [Custom HTTP Headers](../docs/providers.md#custom-http-headers) for usage.
+
+```go
+func WithClientRequestID(ctx context.Context, id string) context.Context
+```
+
+Returns a child context that sends `id` with each provider request made with it,
+so the provider can find a request that failed without a response. The OpenAI
+providers except Codex send `X-Client-Request-Id`, as do OpenCode Go (for models
+routed to Completions or Responses) and Ark video; GitHub Copilot sends
+`X-Request-Id`. Other providers do not send it. It overrides a request-context
+header of the same name; an empty `id` clears an inherited one. Use a new ID for
+every call. `GenerateVideo` sends it only with the create request. See
+[Client Request ID](../docs/providers.md#client-request-id).
+
 ### Provider Contracts
 
 ```go
 type Provider interface {
     Name() string
     ListModels(ctx context.Context) ([]Model, error)
-    Test(ctx context.Context) *ProviderTestResult
+    // Test returns nil when the provider is reachable and accepts the
+    // credentials, a *APIError (Kind set) when it rejected the check, and any
+    // other error when it was not reached.
+    Test(ctx context.Context) error
     TestModel(ctx context.Context, modelID string) (*ModelTestResult, error)
     DoGenerate(ctx context.Context, req Request) (ModelResult, error)
     DoStream(ctx context.Context, req Request) (<-chan StreamPart, error)
-}
-
-type ProviderStatus string
-
-const (
-    ProviderStatusOK          ProviderStatus = "ok"
-    ProviderStatusUnhealthy   ProviderStatus = "unhealthy"
-    ProviderStatusUnreachable ProviderStatus = "unreachable"
-)
-
-type ProviderTestResult struct {
-    Status  ProviderStatus
-    Message string
-    Error   error
 }
 
 type ModelTestResult struct {
     Supported bool
     Message   string
 }
+
+// ClassifyProbe maps a probe request's error (nil for 2xx, *APIError
+// otherwise) to a ModelTestResult: 2xx/400/422/429 supported, 404 not found,
+// anything else returned unchanged.
+func ClassifyProbe(err error) (*ModelTestResult, error)
 ```
 
 ### Models
@@ -693,13 +717,14 @@ type Option func(*Provider)
 func WithAPIKey(apiKey string) Option
 func WithBaseURL(baseURL string) Option
 func WithHTTPClient(client *http.Client) Option
+func WithHeaders(headers map[string]string) Option
 func WithMessageRoleCapabilities(capabilities sdk.MessageRoleCapabilities) Option
 func WithDeepSeekChatCompletionsCompat() Option
 func New(options ...Option) *Provider
 
 func (p *Provider) Name() string
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
@@ -732,11 +757,12 @@ type Option func(*Provider)
 func WithAPIKey(apiKey string) Option
 func WithBaseURL(baseURL string) Option
 func WithHTTPClient(client *http.Client) Option
+func WithHeaders(headers map[string]string) Option
 func New(options ...Option) *Provider
 
 func (p *Provider) Name() string
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
@@ -787,11 +813,12 @@ func WithAccountID(accountID string) Option
 func WithOriginator(originator string) Option
 func WithBaseURL(baseURL string) Option
 func WithHTTPClient(client *http.Client) Option
+func WithHeaders(headers map[string]string) Option
 func New(options ...Option) *Provider
 
 func (p *Provider) Name() string
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
@@ -845,7 +872,7 @@ func New(options ...Option) *Provider
 
 func (p *Provider) Name() string
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
@@ -883,11 +910,12 @@ type Option func(*Provider)
 func WithAPIKey(apiKey string) Option
 func WithBaseURL(baseURL string) Option
 func WithHTTPClient(client *http.Client) Option
+func WithHeaders(headers map[string]string) Option
 func New(options ...Option) *Provider
 
 func (p *Provider) Name() string
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
+func (p *Provider) Test(ctx context.Context) error
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
 func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
@@ -922,6 +950,7 @@ type Option func(*Provider)
 func WithAPIKey(apiKey string) Option
 func WithBaseURL(baseURL string) Option
 func WithHTTPClient(client *http.Client) Option
+func WithHeaders(headers map[string]string) Option
 func New(options ...Option) *Provider
 
 func (p *Provider) EmbeddingModel(id string) *sdk.EmbeddingModel
@@ -991,6 +1020,7 @@ type Option func(*Provider)
 func WithAPIKey(apiKey string) Option
 func WithBaseURL(baseURL string) Option
 func WithHTTPClient(client *http.Client) Option
+func WithHeaders(headers map[string]string) Option
 func New(options ...Option) *Provider
 
 func (p *Provider) GenerationModel(id string) *sdk.ImageGenerationModel
@@ -1024,3 +1054,51 @@ Edit behavior:
 - OpenAI image generation and editing (dall-e, gpt-image): `provider/openai/images`
 - OpenAI-compatible embeddings: `provider/openai/embedding`
 - Gemini embeddings with task-type tuning: `provider/google/embedding`
+
+---
+
+## Package `provider/opencode/go`
+
+Package name: `opencodego`. Implements `sdk.Provider` by routing each model to
+Chat Completions, Responses or Anthropic Messages.
+
+```go
+type Protocol string
+const (
+    ProtocolCompletions Protocol = "openai-completions"
+    ProtocolResponses   Protocol = "openai-responses"
+    ProtocolMessages    Protocol = "anthropic-messages"
+)
+const SessionHeader = "x-opencode-session"
+
+type Option func(*Provider)
+func WithAPIKey(apiKey string) Option
+func WithBaseURL(baseURL string) Option
+func WithHTTPClient(client *http.Client) Option
+func WithHeaders(headers map[string]string) Option
+func WithModelProtocols(protocols map[string]Protocol) Option
+func New(options ...Option) *Provider
+
+func (p *Provider) Name() string // "opencode-go"
+func (p *Provider) ChatModel(id string) *sdk.Model
+func (p *Provider) ProtocolForModel(id string) (Protocol, error)
+func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
+func (p *Provider) Test(ctx context.Context) error
+func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
+```
+
+Default base URL: `https://opencode.ai/zen/go/v1`. Supply your application's
+User-Agent and a stable conversation ID through `sdk.WithRequestHeaders(ctx,
+map[string]string{opencodego.SessionHeader: conversationID})`.
+
+Models use Completions unless the SDK's small exception table, taken from the
+official endpoint table, routes them to Responses or Messages. `ListModels` is
+the live upstream list; it carries no protocol metadata, so a new model uses
+Completions until it is added to the table or registered with
+`WithModelProtocols`. `ProtocolForModel` returns an error only for an invalid
+protocol; names and prefixes are never used to guess a protocol.
+`Test` checks only public catalog reachability. `TestModel` performs a small,
+potentially billable generation request and requires the same request context as
+normal generation. See [OpenCode Go](../docs/providers.md#opencode-go-provider).

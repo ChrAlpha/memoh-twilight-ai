@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/messagecompat"
 	"github.com/felinics/twilight/internal/utils"
 	openaiutil "github.com/felinics/twilight/provider/openai"
@@ -24,6 +25,7 @@ const (
 )
 
 type Provider struct {
+	headers        map[string]string
 	apiKey         string
 	baseURL        string
 	httpClient     *http.Client
@@ -31,6 +33,14 @@ type Provider struct {
 }
 
 type Option func(*Provider)
+
+// WithHeaders sets provider-wide HTTP headers, overriding defaults. The map is
+// copied when the option is created. Use sdk.WithRequestHeaders for call-scoped
+// values such as session IDs; those take precedence over these headers.
+func WithHeaders(headers map[string]string) Option {
+	headers = utils.MergeHeaders(headers)
+	return func(p *Provider) { p.headers = headers }
+}
 
 func WithAPIKey(apiKey string) Option {
 	return func(p *Provider) { p.apiKey = apiKey }
@@ -75,11 +85,13 @@ func (p *Provider) Name() string { return "openai-responses" }
 
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	resp, err := utils.FetchJSON[modelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Headers: p.authHeaders(),
-		Prepare: p.prepareRequest,
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models",
+		Headers:     p.requestHeaders(ctx),
+		Prepare:     p.prepareRequest,
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openai-responses: list models request failed: %w", err)
@@ -96,53 +108,60 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	return models, nil
 }
 
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
+func (p *Provider) Test(ctx context.Context) error {
 	_, err := utils.FetchJSON[modelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Query:   map[string]string{"limit": "1"},
-		Headers: p.authHeaders(),
-		Prepare: p.prepareRequest,
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models",
+		Query:       map[string]string{"limit": "1"},
+		Headers:     p.requestHeaders(ctx),
+		Prepare:     p.prepareRequest,
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
-		return classifyError(err)
+		return fmt.Errorf("openai-responses: test request failed: %w", err)
 	}
-	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
+	return nil
 }
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
 	_, err := utils.FetchJSON[modelObject](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models/" + modelID,
-		Headers: p.authHeaders(),
-		Prepare: p.prepareRequest,
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models/" + modelID,
+		Headers:     p.requestHeaders(ctx),
+		Prepare:     p.prepareRequest,
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err == nil {
 		return &sdk.ModelTestResult{Supported: true, Message: "supported"}, nil
 	}
-	var apiErr *utils.APIError
+	var apiErr *sdk.APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 		return nil, fmt.Errorf("openai-responses: test model request failed: %w", err)
 	}
 
-	status, probeErr := utils.ProbeStatus(ctx, p.httpClient, &utils.RequestOptions{
+	probeErr := utils.Probe(ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
 		Path:    "/responses",
-		Headers: p.authHeaders(),
+		Headers: p.requestHeaders(ctx),
 		Prepare: p.prepareRequest,
 		Body: map[string]any{
 			"model":             modelID,
 			"input":             "hi",
 			"max_output_tokens": 1,
 		},
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
-	if probeErr != nil {
-		return nil, fmt.Errorf("openai-responses: probe model request failed: %w", probeErr)
+	result, err := sdk.ClassifyProbe(probeErr)
+	if err != nil {
+		return nil, fmt.Errorf("openai-responses: probe model request failed: %w", err)
 	}
-	return sdk.ClassifyProbeStatus(status)
+	return result, nil
 }
 
 func (p *Provider) ChatModel(id string) *sdk.Model {
@@ -153,14 +172,13 @@ func (p *Provider) ChatModel(id string) *sdk.Model {
 	}
 }
 
-func (p *Provider) authHeaders() map[string]string {
-	if p.prepareRequest != nil {
-		return nil
+func (p *Provider) requestHeaders(ctx context.Context) map[string]string {
+	var defaults map[string]string
+	if p.prepareRequest == nil && p.apiKey != "" {
+		defaults = utils.AuthHeader(p.apiKey)
 	}
-	if p.apiKey == "" {
-		return nil
-	}
-	return utils.AuthHeader(p.apiKey)
+	headers := utils.RequestHeaders(ctx, defaults, p.headers)
+	return utils.AddClientRequestID(ctx, headers, utils.ClientRequestIDHeader)
 }
 
 // ---------- DoGenerate ----------
@@ -175,24 +193,25 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 		return sdk.ModelResult{}, fmt.Errorf("openai-responses: build request: %w", err)
 	}
 
-	resp, err := utils.FetchJSON[responsesResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/responses",
-		Headers: p.authHeaders(),
-		Prepare: p.prepareRequest,
-		Body:    wireReq,
+	resp, header, body, err := utils.FetchJSONBody[responsesResponse](ctx, p.httpClient, &utils.RequestOptions{
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/responses",
+		Headers:     p.requestHeaders(ctx),
+		Prepare:     p.prepareRequest,
+		Body:        wireReq,
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
-		var apiErr *utils.APIError
-		if errors.As(err, &apiErr) {
-			return sdk.ModelResult{}, fmt.Errorf("openai-responses: request failed: %s", apiErr.Detail())
-		}
 		return sdk.ModelResult{}, fmt.Errorf("openai-responses: request failed: %w", err)
 	}
 
+	// A response that failed is returned with a 2xx status and its error
+	// object set (https://platform.openai.com/docs/api-reference/responses/object).
 	if resp.Error != nil {
-		return sdk.ModelResult{}, fmt.Errorf("openai-responses: api error [%s]: %s", resp.Error.Code, resp.Error.Message)
+		return sdk.ModelResult{}, fmt.Errorf("openai-responses: response failed: %w",
+			utils.NewBodyError(p.Name(), header, body, errorformat.DecodeOpenAI))
 	}
 
 	return p.parseResponse(resp)
@@ -564,6 +583,9 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 			usage            sdk.Usage
 			incompleteReason string
 			hasFunctionCall  bool
+			// done is set by response.completed or response.incomplete, the
+			// events that end a response that did not fail.
+			done bool
 
 			textStartSent     bool
 			activeReasoningID string
@@ -626,12 +648,14 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		}
 
 		err := utils.FetchSSE(ctx, p.httpClient, &utils.RequestOptions{
-			Method:  http.MethodPost,
-			BaseURL: p.baseURL,
-			Path:    "/responses",
-			Headers: p.authHeaders(),
-			Prepare: p.prepareRequest,
-			Body:    wireReq,
+			Method:      http.MethodPost,
+			BaseURL:     p.baseURL,
+			Path:        "/responses",
+			Headers:     p.requestHeaders(ctx),
+			Prepare:     p.prepareRequest,
+			Body:        wireReq,
+			Provider:    p.Name(),
+			DecodeError: errorformat.DecodeOpenAI,
 		}, func(ev *utils.SSEEvent) error {
 			eventType := ev.Event
 			if eventType == "" {
@@ -811,51 +835,38 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 					},
 				})
 
+				done = true
 				return utils.ErrStreamDone
 
 			case "response.failed":
+				// The failed response still reports the usage it consumed.
 				var chunk responsesFailedChunk
-				if err := json.Unmarshal([]byte(ev.Data), &chunk); err != nil {
-					return nil
-				}
-				if chunk.Response.Usage != nil {
+				if json.Unmarshal([]byte(ev.Data), &chunk) == nil && chunk.Response.Usage != nil {
 					usage = convertResponsesUsage(chunk.Response.Usage)
 				}
-				if chunk.Response.Error == nil {
-					send(&sdk.ErrorPart{Error: fmt.Errorf("openai-responses: response failed")})
-				} else {
-					send(&sdk.ErrorPart{Error: fmt.Errorf(
-						"openai-responses: %s: %s",
-						chunk.Response.Error.Code,
-						chunk.Response.Error.Message,
-					)})
-				}
-				return utils.ErrStreamDone
+				return utils.NewBodyError(p.Name(), ev.Header, []byte(ev.Data), errorformat.DecodeOpenAIFailedEvent)
 
 			case "error":
-				var chunk responsesErrorChunk
-				if err := json.Unmarshal([]byte(ev.Data), &chunk); err != nil {
-					return nil
-				}
-				send(&sdk.ErrorPart{Error: fmt.Errorf("openai-responses: %s: %s", chunk.Error.Code, chunk.Error.Message)})
-				return utils.ErrStreamDone
+				return utils.NewBodyError(p.Name(), ev.Header, []byte(ev.Data), errorformat.DecodeOpenAIErrorEvent)
 			}
 
 			return nil
 		})
 
+		// A response that did not fail ends with response.completed or
+		// response.incomplete
+		// (https://platform.openai.com/docs/api-reference/responses-streaming).
+		if err == nil && !done {
+			err = sdk.ErrStreamIncomplete
+		}
+		finishReason := mapResponsesFinishReason(incompleteReason, hasFunctionCall)
 		if err != nil {
-			var apiErr *utils.APIError
-			if errors.As(err, &apiErr) {
-				send(&sdk.ErrorPart{Error: fmt.Errorf("openai-responses: stream failed: %s", apiErr.Detail())})
-			} else {
-				send(&sdk.ErrorPart{Error: fmt.Errorf("openai-responses: stream failed: %w", err)})
-			}
+			send(&sdk.ErrorPart{Error: fmt.Errorf("openai-responses: stream failed: %w", err)})
+			finishReason = sdk.FinishReasonError
 		}
 
 		flush()
 
-		finishReason := mapResponsesFinishReason(incompleteReason, hasFunctionCall)
 		send(&sdk.FinishPart{
 			FinishReason:    finishReason,
 			RawFinishReason: incompleteReason,

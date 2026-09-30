@@ -100,6 +100,27 @@ sdk.VideoJobCanceled
 
 `sdk.GenerateVideo` waits by default with a 10 minute timeout and 5 second poll interval. Use `WithVideoWait(false)`, `WithVideoPollTimeout(...)`, and `WithVideoPollInterval(...)` to override this behavior.
 
+### Errors
+
+A failed job carries `job.Error`, a `*sdk.VideoError` with the provider's `Code` and `Message` and the SDK's `Kind`. `CreateVideo` and `GetVideo` return it as job data with a nil error.
+
+`sdk.GenerateVideo` returns a failed job as a `*sdk.APIError` together with the result. `StatusCode` is 0 because the HTTP call that reported it succeeded; `Code`, `Message` and `Kind` come from `job.Error`. When the poll timeout or `ctx` ends first, the error wraps the context error:
+
+```go
+result, err := sdk.GenerateVideo(ctx, sdk.WithVideoModel(model), sdk.WithVideoPrompt("..."))
+var apiErr *sdk.APIError
+switch {
+case errors.As(err, &apiErr):
+    log.Printf("job %s failed: %s %s", result.Job.ID, apiErr.Code, apiErr.Message)
+case errors.Is(err, context.DeadlineExceeded):
+    log.Print("job did not finish in time")
+}
+```
+
+A download that answers with a non-2xx status is a `*sdk.APIError` as well.
+
+Custom providers implement `sdk.VideoProvider`, whose `Name()` fills `APIError.Provider`.
+
 ## OpenRouter Videos
 
 Package:

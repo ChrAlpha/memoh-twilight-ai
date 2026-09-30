@@ -26,8 +26,13 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
+	"github.com/felinics/twilight/internal/utils"
 	sdk "github.com/felinics/twilight/sdk"
 )
+
+// providerName identifies this package in APIError.Provider.
+const providerName = "openrouter-speech"
 
 const (
 	defaultModelID   = "openai/gpt-audio-mini"
@@ -100,8 +105,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.SpeechModel, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openrouter speech: unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("openrouter speech: list models: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeOpenRouter))
 	}
 
 	rawModels, err := decodeOpenRouterModels(resp.Body)
@@ -238,8 +242,7 @@ func (p *Provider) synthesize(ctx context.Context, text string, cfg audioConfig)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openrouter speech: unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("openrouter speech: synthesize: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeOpenRouter))
 	}
 
 	chunks, err := collectPCMChunks(resp.Body)

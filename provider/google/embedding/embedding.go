@@ -6,11 +6,17 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
 	"github.com/felinics/twilight/sdk"
 )
 
-const defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
+const (
+	defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
+
+	// providerName identifies this package in APIError.Provider.
+	providerName = "google-embedding"
+)
 
 type Provider struct {
 	apiKey     string
@@ -88,11 +94,13 @@ func (p *Provider) doEmbedSingle(ctx context.Context, params sdk.EmbedParams, mo
 	}
 
 	resp, err := utils.FetchJSON[embedContentResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/" + modelPath + ":embedContent",
-		Headers: p.authHeaders(),
-		Body:    req,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/" + modelPath + ":embedContent",
+		Headers:     p.authHeaders(),
+		Body:        req,
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeGoogle,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("google: embedContent request failed: %w", err)
@@ -118,11 +126,13 @@ func (p *Provider) doEmbedBatch(ctx context.Context, params sdk.EmbedParams, mod
 	}
 
 	resp, err := utils.FetchJSON[batchEmbedContentsResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/" + modelPath + ":batchEmbedContents",
-		Headers: p.authHeaders(),
-		Body:    &batchEmbedContentsRequest{Requests: requests},
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/" + modelPath + ":batchEmbedContents",
+		Headers:     p.authHeaders(),
+		Body:        &batchEmbedContentsRequest{Requests: requests},
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeGoogle,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("google: batchEmbedContents request failed: %w", err)

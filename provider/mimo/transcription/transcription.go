@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
+	"github.com/felinics/twilight/internal/utils"
 	sdk "github.com/felinics/twilight/sdk"
 )
 
@@ -18,6 +20,11 @@ const (
 	defaultModelID  = "mimo-v2.5-asr"
 	defaultBaseURL  = "https://api.xiaomimimo.com/v1"
 	defaultLanguage = "auto"
+
+	// providerName identifies this package in APIError.Provider. MiMo
+	// publishes no error reference; its /chat/completions endpoint is
+	// OpenAI-compatible and answers errors in OpenAI's envelope.
+	providerName = "mimo-transcription"
 )
 
 type Option func(*Provider)
@@ -112,8 +119,7 @@ func (p *Provider) DoTranscribe(ctx context.Context, params sdk.TranscriptionPar
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("mimo transcription: unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("mimo transcription: transcribe: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeOpenAI))
 	}
 
 	body, err := io.ReadAll(resp.Body)

@@ -3,6 +3,7 @@ package codex_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -201,5 +202,78 @@ func TestCodexDoStream_CapturesEncryptedContentFromItemDone(t *testing.T) {
 	}
 	if meta["itemId"] != "rs_ec" {
 		t.Errorf("item id: got %v, want rs_ec", meta["itemId"])
+	}
+}
+
+// A stream that fails reports the error as an *sdk.APIError, then a
+// FinishPart that keeps the usage response.failed reported.
+func TestCodexDoStream_InBandErrors(t *testing.T) {
+	cases := []struct {
+		name      string
+		event     string
+		data      string
+		wantCode  string
+		wantKind  sdk.ErrorKind
+		wantUsage int
+	}{
+		{
+			name:     "error event",
+			event:    "error",
+			data:     `{"type":"error","code":"server_is_overloaded","message":"busy","sequence_number":2}`,
+			wantCode: "server_is_overloaded", wantKind: sdk.KindServerError,
+		},
+		{
+			name:     "failed with usage",
+			event:    "response.failed",
+			data:     `{"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"boom"},"usage":{"input_tokens":5,"output_tokens":2}}}`,
+			wantCode: "server_error", wantKind: sdk.KindServerError, wantUsage: 7,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("event: response.created\n"))
+				_, _ = w.Write([]byte("data: {\"response\":{\"id\":\"resp_err\",\"created_at\":1700000000,\"model\":\"gpt-5.2\"}}\n\n"))
+				_, _ = w.Write([]byte("event: " + tc.event + "\n"))
+				_, _ = w.Write([]byte("data: " + tc.data + "\n\n"))
+			}))
+			defer srv.Close()
+
+			p := codex.New(codex.WithAccessToken("token-123"), codex.WithBaseURL(srv.URL))
+			parts, err := p.DoStream(context.Background(), sdk.Request{
+				Model:    "gpt-5.2",
+				Messages: []sdk.Message{sdk.UserMessage("hi")},
+			})
+			if err != nil {
+				t.Fatalf("DoStream: %v", err)
+			}
+			var errs []error
+			var finish *sdk.FinishPart
+			for part := range parts {
+				switch part := part.(type) {
+				case *sdk.ErrorPart:
+					errs = append(errs, part.Error)
+				case *sdk.FinishPart:
+					finish = part
+				}
+			}
+			if len(errs) != 1 {
+				t.Fatalf("ErrorParts = %v, want one", errs)
+			}
+			var apiErr *sdk.APIError
+			if !errors.As(errs[0], &apiErr) {
+				t.Fatalf("error %v is not an *sdk.APIError", errs[0])
+			}
+			if apiErr.StatusCode != 0 || apiErr.Code != tc.wantCode || apiErr.Kind != tc.wantKind {
+				t.Errorf("APIError = %+v, want status 0, code %q, kind %q", apiErr, tc.wantCode, tc.wantKind)
+			}
+			if finish == nil {
+				t.Fatal("no FinishPart")
+			}
+			if finish.FinishReason != sdk.FinishReasonError || finish.TotalUsage.TotalTokens != tc.wantUsage {
+				t.Errorf("FinishPart = %+v, want reason error and %d total tokens", finish, tc.wantUsage)
+			}
+		})
 	}
 }

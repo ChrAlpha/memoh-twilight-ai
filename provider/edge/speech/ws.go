@@ -10,13 +10,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/felinics/twilight/internal/utils"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
@@ -137,9 +137,10 @@ func (c *edgeWsClient) connect(ctx context.Context) error {
 	conn, resp, err := d.DialContext(ctx, wsURL, reqHeader)
 	if err != nil {
 		if resp != nil {
-			body, _ := io.ReadAll(resp.Body)
-			_ = resp.Body.Close()
-			return fmt.Errorf("edge tts ws dial: %w (status=%s body=%s)", err, resp.Status, string(bytes.TrimSpace(body)))
+			defer resp.Body.Close()
+			// The Edge read-aloud service is undocumented and has no error
+			// body format to decode, so the status alone sets the Kind.
+			return fmt.Errorf("edge tts ws dial: %w", utils.NewHTTPError(providerName, resp, nil))
 		}
 		return fmt.Errorf("edge tts ws dial: %w", err)
 	}

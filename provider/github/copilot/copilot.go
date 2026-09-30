@@ -3,7 +3,6 @@ package copilot
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -16,6 +15,7 @@ import (
 const defaultBaseURL = "https://api.githubcopilot.com"
 
 type Provider struct {
+	headers      map[string]string
 	githubToken  string
 	baseURL      string
 	httpClient   *http.Client
@@ -29,6 +29,14 @@ func WithGitHubToken(token string) Option {
 	return func(p *Provider) {
 		p.githubToken = token
 	}
+}
+
+// WithHeaders sets provider-wide HTTP headers, overriding defaults. The map is
+// copied when the option is created. Use sdk.WithRequestHeaders for call-scoped
+// values such as session IDs; those take precedence over these headers.
+func WithHeaders(headers map[string]string) Option {
+	headers = utils.MergeHeaders(headers)
+	return func(p *Provider) { p.headers = headers }
 }
 
 // WithAPIKey is an alias for WithGitHubToken so callers can swap providers with minimal call-site changes.
@@ -86,12 +94,9 @@ func (p *Provider) ListModels(context.Context) ([]sdk.Model, error) {
 	return out, nil
 }
 
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
+func (p *Provider) Test(ctx context.Context) error {
 	_, err := p.TestModel(ctx, AutoModel)
-	if err != nil {
-		return classifyError(err)
-	}
-	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
+	return err
 }
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
@@ -103,17 +108,20 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 		return nil, fmt.Errorf("github-copilot: build probe request: %w", err)
 	}
 
-	status, err := utils.ProbeStatus(ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/chat/completions",
-		Headers: p.authHeaders(),
-		Body:    req,
+	probeErr := utils.Probe(ctx, p.httpClient, &utils.RequestOptions{
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/chat/completions",
+		Headers:     p.requestHeaders(ctx),
+		Body:        req,
+		Provider:    p.Name(),
+		DecodeError: decodeError,
 	})
+	result, err := sdk.ClassifyProbe(probeErr)
 	if err != nil {
 		return nil, fmt.Errorf("github-copilot: probe model request failed: %w", err)
 	}
-	return sdk.ClassifyProbeStatus(status)
+	return result, nil
 }
 
 func (p *Provider) ChatModel(id string) *sdk.Model {
@@ -138,17 +146,15 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 	}
 
 	resp, err := utils.FetchJSON[chatResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/chat/completions",
-		Headers: p.authHeaders(),
-		Body:    wire,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/chat/completions",
+		Headers:     p.requestHeaders(ctx),
+		Body:        wire,
+		Provider:    p.Name(),
+		DecodeError: decodeError,
 	})
 	if err != nil {
-		var apiErr *utils.APIError
-		if errors.As(err, &apiErr) {
-			return sdk.ModelResult{}, fmt.Errorf("github-copilot: chat completions request failed: %s", apiErr.Detail())
-		}
 		return sdk.ModelResult{}, fmt.Errorf("github-copilot: chat completions request failed: %w", err)
 	}
 
@@ -432,39 +438,41 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		}
 
 		err := utils.FetchSSE(ctx, p.httpClient, &utils.RequestOptions{
-			Method:  http.MethodPost,
-			BaseURL: p.baseURL,
-			Path:    "/chat/completions",
-			Headers: p.authHeaders(),
-			Body:    wire,
+			Method:      http.MethodPost,
+			BaseURL:     p.baseURL,
+			Path:        "/chat/completions",
+			Headers:     p.requestHeaders(ctx),
+			Body:        wire,
+			Provider:    p.Name(),
+			DecodeError: decodeError,
 		}, func(ev *utils.SSEEvent) error {
 			if ev.Data == "[DONE]" {
+				sp.done = true
 				return utils.ErrStreamDone
 			}
 
 			var chunk chatChunkResponse
 			if err := json.Unmarshal([]byte(ev.Data), &chunk); err != nil {
-				sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: unmarshal chunk: %w", err)})
-				return err
+				return fmt.Errorf("unmarshal chunk: %w", err)
 			}
 
 			return sp.processChunk(&chunk)
 		})
 
+		if err == nil && !sp.done {
+			err = sdk.ErrStreamIncomplete
+		}
+		finish := sp.finishReason
 		if err != nil {
-			var apiErr *utils.APIError
-			if errors.As(err, &apiErr) {
-				sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: stream failed: %s", apiErr.Detail())})
-			} else {
-				sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: stream failed: %w", err)})
-			}
+			sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: stream failed: %w", err)})
+			finish = sdk.FinishReasonError
 		}
 
 		sp.flush()
 		sp.emitFinishStep()
 
 		sp.send(&sdk.FinishPart{
-			FinishReason:    sp.finishReason,
+			FinishReason:    finish,
 			RawFinishReason: sp.rawFinishReason,
 			TotalUsage:      sp.usage,
 		})
@@ -555,31 +563,8 @@ func mapFinishReason(reason string) sdk.FinishReason {
 	}
 }
 
-func classifyError(err error) *sdk.ProviderTestResult {
-	var apiErr *utils.APIError
-	if errors.As(err, &apiErr) {
-		if apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden {
-			return &sdk.ProviderTestResult{
-				Status:  sdk.ProviderStatusUnhealthy,
-				Message: fmt.Sprintf("authentication failed: %s", apiErr.Message),
-				Error:   err,
-			}
-		}
-		return &sdk.ProviderTestResult{
-			Status:  sdk.ProviderStatusUnhealthy,
-			Message: fmt.Sprintf("service error (%d): %s", apiErr.StatusCode, apiErr.Message),
-			Error:   err,
-		}
-	}
-	return &sdk.ProviderTestResult{
-		Status:  sdk.ProviderStatusUnreachable,
-		Message: fmt.Sprintf("connection failed: %s", err.Error()),
-		Error:   err,
-	}
-}
-
-func (p *Provider) authHeaders() map[string]string {
-	return map[string]string{
-		"Authorization": utils.BearerToken(p.githubToken),
-	}
+func (p *Provider) requestHeaders(ctx context.Context) map[string]string {
+	headers := utils.RequestHeaders(ctx, utils.AuthHeader(p.githubToken), p.headers)
+	// VS Code Copilot Chat sends its own request ID as X-Request-Id.
+	return utils.AddClientRequestID(ctx, headers, "X-Request-Id")
 }

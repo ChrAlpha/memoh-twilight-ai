@@ -5,15 +5,22 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
 	"github.com/felinics/twilight/sdk"
 )
 
-const defaultBaseURL = "https://api.openai.com/v1"
+const (
+	defaultBaseURL = "https://api.openai.com/v1"
+
+	// providerName identifies this package in APIError.Provider.
+	providerName = "openai-images"
+)
 
 // Provider implements sdk.ImageGenerationProvider and sdk.ImageEditProvider
 // for the OpenAI Images API.
 type Provider struct {
+	headers    map[string]string
 	apiKey     string
 	baseURL    string
 	httpClient *http.Client
@@ -21,6 +28,14 @@ type Provider struct {
 
 // Option configures the Provider.
 type Option func(*Provider)
+
+// WithHeaders sets provider-wide HTTP headers, overriding defaults. The map is
+// copied when the option is created. Use sdk.WithRequestHeaders for call-scoped
+// values such as session IDs; those take precedence over these headers.
+func WithHeaders(headers map[string]string) Option {
+	headers = utils.MergeHeaders(headers)
+	return func(p *Provider) { p.headers = headers }
+}
 
 func WithAPIKey(apiKey string) Option {
 	return func(p *Provider) { p.apiKey = apiKey }
@@ -84,11 +99,13 @@ func (p *Provider) DoGenerate(ctx context.Context, params *sdk.ImageGenerationPa
 	}
 
 	resp, err := utils.FetchJSON[imagesResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/images/generations",
-		Headers: utils.AuthHeader(p.apiKey),
-		Body:    req,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/images/generations",
+		Headers:     p.requestHeaders(ctx),
+		Body:        req,
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openai images: generation request failed: %w", err)
@@ -136,11 +153,13 @@ func (p *Provider) doEditJSON(ctx context.Context, params *sdk.ImageEditParams) 
 	}
 
 	resp, err := utils.FetchJSON[imagesResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/images/edits",
-		Headers: utils.AuthHeader(p.apiKey),
-		Body:    req,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/images/edits",
+		Headers:     p.requestHeaders(ctx),
+		Body:        req,
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openai images: edit request failed: %w", err)
@@ -195,4 +214,9 @@ func needsMultipart(params *sdk.ImageEditParams) bool {
 		return true
 	}
 	return false
+}
+
+func (p *Provider) requestHeaders(ctx context.Context) map[string]string {
+	headers := utils.RequestHeaders(ctx, utils.AuthHeader(p.apiKey), p.headers)
+	return utils.AddClientRequestID(ctx, headers, utils.ClientRequestIDHeader)
 }

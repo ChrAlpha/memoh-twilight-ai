@@ -132,14 +132,17 @@ To collect the whole stream without handling parts, `sdk.CollectStream(ctx, stre
 Before making generation requests, you can verify that your API key and endpoint are working:
 
 ```go
-result := provider.Test(ctx)
-switch result.Status {
-case sdk.ProviderStatusOK:
+err := provider.Test(ctx)
+var apiErr *sdk.APIError
+switch {
+case err == nil:
     fmt.Println("Ready to go!")
-case sdk.ProviderStatusUnhealthy:
-    fmt.Printf("Connected but auth failed: %s\n", result.Message)
-case sdk.ProviderStatusUnreachable:
-    fmt.Printf("Cannot reach endpoint: %s\n", result.Message)
+case sdk.KindOf(err) == sdk.KindAuthentication:
+    fmt.Printf("Connected but auth failed: %v\n", err)
+case errors.As(err, &apiErr):
+    fmt.Printf("Connected but the check failed (HTTP %d): %v\n", apiErr.StatusCode, err)
+default:
+    fmt.Printf("Cannot reach endpoint: %v\n", err)
 }
 ```
 
@@ -246,7 +249,15 @@ vec, err := client.Embed(ctx, "search query here", sdk.WithEmbeddingModel(embMod
 
 ## Environment Variables
 
-The SDK itself does not read environment variables, but the test suite supports a `.env` file with:
+The SDK itself does not read environment variables.
+
+`go test ./...` runs only offline tests against local HTTP fixtures; it never contacts a real provider, even when API keys are set. Tests that call real APIs are compiled only with the `integration` build tag:
+
+```bash
+go test -tags integration -count=1 -run '^TestIntegration_' ./...
+```
+
+These send real requests that may be billed. Each test skips when its credentials are missing. Credentials are read from the environment, or from a `.env` file in the repository root (see `.env.example`):
 
 ```
 OPENAI_API_KEY=sk-...
