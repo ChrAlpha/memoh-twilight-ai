@@ -18,7 +18,13 @@ func TestDecodeError(t *testing.T) {
 	body := func(status, code, msg string) string {
 		return `{"error":{"code":"` + code + `","message":"` + msg + `","param":"","type":"` + status + `"}}`
 	}
+	// Captured from ark.cn-beijing.volces.com on 2026-09-30 with an invalid key.
+	const liveID = "021790757388403d5e3a06b1d3d650f0fc414a0e965c4997c2338"
+	const liveMsg = "The API key format is incorrect. Request id: " + liveID
 	cases := []providertest.ErrorCase{
+		{Name: "live authentication", Status: 401, Header: http.Header{"X-Request-Id": {liveID}, "X-Error-Code": {"AuthN_AuthenticationError"}},
+			Body: body("Unauthorized", "AuthenticationError", liveMsg),
+			Want: sdk.APIError{Type: "Unauthorized", Code: "AuthenticationError", Message: liveMsg, RequestID: liveID, Kind: sdk.KindAuthentication}},
 		{Name: "authentication", Status: 401, Body: body("Unauthorized", "AuthenticationError", "The API key or AK/SK in the request is missing or invalid. Request ID: 1."),
 			Want: sdk.APIError{Type: "Unauthorized", Code: "AuthenticationError", Message: "The API key or AK/SK in the request is missing or invalid. Request ID: 1.", Kind: sdk.KindAuthentication}},
 		{Name: "overdue is 403", Status: 403, Body: body("Forbidden", "AccountOverdueError", "overdue"),

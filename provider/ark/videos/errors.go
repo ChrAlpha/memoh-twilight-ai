@@ -10,8 +10,11 @@ const providerName = "ark-videos"
 
 // decodeError fills e from an Ark error body, which uses OpenAI's envelope:
 // {"error":{"code":"AuthenticationError","message":"...","param":"","type":"Unauthorized"}}.
+// The request ID is the x-request-id response header, the ID the message
+// quotes as "Request id".
 func decodeError(e *sdk.APIError) {
 	errorformat.ParseOpenAI(e)
+	e.RequestID = e.Header.Get("x-request-id")
 	if k := kindFor(e.Code); k != sdk.KindUnknown {
 		e.Kind = k
 	}
