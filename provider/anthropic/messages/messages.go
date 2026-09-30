@@ -873,7 +873,13 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 			Body:    body,
 		}, h.handleEvent)
 
-		if err != nil {
+		if err == nil {
+			err = ctx.Err()
+		}
+		if err == nil && !h.failed && h.rawFinishReason == "" {
+			err = errors.New("stream ended without a stop reason")
+		}
+		if err != nil && !h.failed {
 			var apiErr *utils.APIError
 			if errors.As(err, &apiErr) {
 				h.send(&sdk.ErrorPart{Error: fmt.Errorf("anthropic: stream failed: %s", apiErr.Detail())})
@@ -882,6 +888,9 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 			}
 		}
 
+		if err == nil && !h.failed && h.rawFinishReason != "" {
+			h.emitFinishStep()
+		}
 		h.send(&sdk.FinishPart{
 			FinishReason:    h.finishReason,
 			RawFinishReason: h.rawFinishReason,
@@ -900,6 +909,8 @@ type streamHandler struct {
 	rawFinishReason string
 	finishReason    sdk.FinishReason
 	usage           sdk.Usage
+	rawUsage        messagesUsage
+	failed          bool
 	messageID       string
 	messageModel    string
 }
@@ -916,6 +927,7 @@ func (h *streamHandler) send(part sdk.StreamPart) bool {
 func (h *streamHandler) handleEvent(ev *utils.SSEEvent) error {
 	var event streamEvent
 	if err := json.Unmarshal([]byte(ev.Data), &event); err != nil {
+		h.failed = true
 		h.send(&sdk.ErrorPart{Error: fmt.Errorf("anthropic: unmarshal event: %w", err)})
 		return err
 	}
@@ -947,7 +959,8 @@ func (h *streamHandler) onMessageStart(event *streamEvent) {
 	}
 	h.messageID = event.Message.ID
 	h.messageModel = event.Message.Model
-	h.usage = convertUsage(&event.Message.Usage)
+	h.rawUsage = event.Message.Usage
+	h.usage = convertUsage(&h.rawUsage)
 }
 
 func (h *streamHandler) onBlockStart(event *streamEvent) {
@@ -1060,14 +1073,17 @@ func (h *streamHandler) onBlockStop(event *streamEvent) {
 }
 
 func (h *streamHandler) onMessageDelta(event *streamEvent) {
-	if event.Delta != nil {
+	if event.Delta != nil && event.Delta.StopReason != "" {
 		h.rawFinishReason = event.Delta.StopReason
 		h.finishReason = mapFinishReason(h.rawFinishReason)
 	}
 	if event.Usage != nil {
-		h.usage.OutputTokens = event.Usage.OutputTokens
-		h.usage.TotalTokens = h.usage.InputTokens + h.usage.OutputTokens
+		h.rawUsage.applyDelta(event.Usage)
+		h.usage = convertUsage(&h.rawUsage)
 	}
+}
+
+func (h *streamHandler) emitFinishStep() {
 	h.send(&sdk.FinishStepPart{
 		FinishReason:    h.finishReason,
 		RawFinishReason: h.rawFinishReason,
@@ -1080,6 +1096,7 @@ func (h *streamHandler) onMessageDelta(event *streamEvent) {
 }
 
 func (h *streamHandler) onError(event *streamEvent) {
+	h.failed = true
 	errMsg := "unknown error"
 	if event.Delta != nil && event.Delta.Text != "" {
 		errMsg = event.Delta.Text
