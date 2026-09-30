@@ -347,7 +347,7 @@ Every value a model or a provider produces has a closed type here: arguments and
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `FinishReasonStop` | `"stop"` | Normal completion |
-| `FinishReasonLength` | `"length"` | Max tokens reached |
+| `FinishReasonLength` | `"length"` | Max tokens or the context window reached |
 | `FinishReasonContentFilter` | `"content-filter"` | Content filter triggered |
 | `FinishReasonToolCalls` | `"tool-calls"` | Model wants to call tools |
 | `FinishReasonError` | `"error"` | An error occurred |

@@ -1126,14 +1126,20 @@ func convertUsage(u *messagesUsage) sdk.Usage {
 	}
 }
 
+// mapFinishReason maps a stop_reason
+// (https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons).
+// model_context_window_exceeded truncates the response as max_tokens does, and
+// refusal is a response the safety classifiers stopped.
 func mapFinishReason(reason string) sdk.FinishReason {
 	switch reason {
 	case "end_turn", "stop_sequence":
 		return sdk.FinishReasonStop
 	case "tool_use":
 		return sdk.FinishReasonToolCalls
-	case "max_tokens":
+	case "max_tokens", "model_context_window_exceeded":
 		return sdk.FinishReasonLength
+	case "refusal":
+		return sdk.FinishReasonContentFilter
 	default:
 		return sdk.FinishReasonUnknown
 	}
