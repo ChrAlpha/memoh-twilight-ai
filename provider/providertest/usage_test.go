@@ -72,6 +72,28 @@ func TestInputUsageContract(t *testing.T) {
 			input: 100, output: 5, detail: sdk.InputTokenDetail{NoCacheTokens: 100},
 		},
 		{
+			name: "null usage",
+			wire: map[string]string{"anthropic": "null", "chat": "null", "responses": "null", "google": "null"},
+		},
+		{
+			name: "null cache field",
+			wire: map[string]string{
+				"anthropic": `{"input_tokens":100,"output_tokens":5,"cache_read_input_tokens":null}`,
+				"chat":      `{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":null}}`,
+				"responses": `{"input_tokens":100,"output_tokens":5,"input_tokens_details":{"cached_tokens":null}}`,
+				"google":    `{"promptTokenCount":100,"candidatesTokenCount":5,"totalTokenCount":105,"cachedContentTokenCount":null}`,
+			},
+			input: 100, output: 5, detail: sdk.InputTokenDetail{NoCacheTokens: 100},
+		},
+		{
+			name: "null cache details",
+			wire: map[string]string{
+				"chat":      `{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":null}`,
+				"responses": `{"input_tokens":100,"output_tokens":5,"input_tokens_details":null}`,
+			},
+			input: 100, output: 5, detail: sdk.InputTokenDetail{NoCacheTokens: 100},
+		},
+		{
 			name: "details without cache read",
 			wire: map[string]string{
 				"chat":      `{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{}}`,
