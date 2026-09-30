@@ -3,7 +3,6 @@ package messages_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -32,93 +31,6 @@ func mustJSON(v any) json.RawMessage {
 		panic(err)
 	}
 	return encoded
-}
-
-// TestDoStreamUpstreamErrorExposesAPIError pins the classification contract
-// on the streaming path: a non-2xx answer surfaces as an ErrorPart whose
-// error still unwraps to *sdk.APIError.
-func TestDoStreamUpstreamErrorExposesAPIError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
-	}))
-	defer srv.Close()
-
-	p := messages.New(
-		messages.WithAPIKey("test-key"),
-		messages.WithBaseURL(srv.URL),
-	)
-
-	sr, err := p.DoStream(context.Background(), sdk.Request{
-		Model: "claude-sonnet-4-20250514",
-		Messages: []sdk.Message{{
-			Role:    sdk.MessageRoleUser,
-			Content: []sdk.MessagePart{sdk.TextPart{Text: "Hi"}},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("DoStream failed: %v", err)
-	}
-
-	var streamErr error
-	for part := range sr {
-		if ep, ok := part.(*sdk.ErrorPart); ok {
-			streamErr = ep.Error
-		}
-	}
-	if streamErr == nil {
-		t.Fatal("expected stream error for 429")
-	}
-	var apiErr *sdk.APIError
-	if !errors.As(streamErr, &apiErr) {
-		t.Fatalf("errors.As(*sdk.APIError) = false, err = %v", streamErr)
-	}
-	if apiErr.StatusCode != http.StatusTooManyRequests {
-		t.Errorf("StatusCode = %d, want %d", apiErr.StatusCode, http.StatusTooManyRequests)
-	}
-	if apiErr.Message != "rate limited" {
-		t.Errorf("Message = %q, want %q", apiErr.Message, "rate limited")
-	}
-}
-
-// TestDoGenerateUpstreamErrorExposesAPIError pins the classification
-// contract: a non-2xx upstream answer crosses the provider boundary as an
-// *sdk.APIError reachable with errors.As, so callers above the provider can
-// read StatusCode instead of parsing the message.
-func TestDoGenerateUpstreamErrorExposesAPIError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
-	}))
-	defer srv.Close()
-
-	p := messages.New(
-		messages.WithAPIKey("test-key"),
-		messages.WithBaseURL(srv.URL),
-	)
-
-	_, err := p.DoGenerate(context.Background(), sdk.Request{
-		Model: "claude-sonnet-4-20250514",
-		Messages: []sdk.Message{{
-			Role:    sdk.MessageRoleUser,
-			Content: []sdk.MessagePart{sdk.TextPart{Text: "Hi"}},
-		}},
-	})
-	if err == nil {
-		t.Fatal("expected error for 429")
-	}
-	var apiErr *sdk.APIError
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("errors.As(*sdk.APIError) = false, err = %v", err)
-	}
-	if apiErr.StatusCode != http.StatusTooManyRequests {
-		t.Errorf("StatusCode = %d, want %d", apiErr.StatusCode, http.StatusTooManyRequests)
-	}
-	if apiErr.Message != "rate limited" {
-		t.Errorf("Message = %q, want %q", apiErr.Message, "rate limited")
-	}
 }
 
 // ---------- unit tests (mock server) ----------
@@ -1792,9 +1704,8 @@ func TestProviderTest_OK(t *testing.T) {
 		messages.WithBaseURL(srv.URL),
 	)
 
-	result := p.Test(context.Background())
-	if result.Status != sdk.ProviderStatusOK {
-		t.Errorf("expected status OK, got %q", result.Status)
+	if err := p.Test(context.Background()); err != nil {
+		t.Errorf("Test() = %v, want nil", err)
 	}
 }
 
@@ -1810,9 +1721,9 @@ func TestProviderTest_Unhealthy(t *testing.T) {
 		messages.WithBaseURL(srv.URL),
 	)
 
-	result := p.Test(context.Background())
-	if result.Status != sdk.ProviderStatusUnhealthy {
-		t.Errorf("expected status Unhealthy, got %q", result.Status)
+	err := p.Test(context.Background())
+	if kind := sdk.KindOf(err); kind != sdk.KindAuthentication {
+		t.Errorf("KindOf(Test()) = %q, want %q (err %v)", kind, sdk.KindAuthentication, err)
 	}
 }
 
@@ -1822,9 +1733,9 @@ func TestProviderTest_Unreachable(t *testing.T) {
 		messages.WithBaseURL("http://127.0.0.1:1"),
 	)
 
-	result := p.Test(context.Background())
-	if result.Status != sdk.ProviderStatusUnreachable {
-		t.Errorf("expected status Unreachable, got %q", result.Status)
+	err := p.Test(context.Background())
+	if err == nil || sdk.KindOf(err) != sdk.KindUnknown {
+		t.Errorf("Test() = %v, want a transport error with no APIError Kind", err)
 	}
 }
 

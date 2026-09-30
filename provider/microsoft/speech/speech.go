@@ -25,6 +25,8 @@ const (
 	defaultOutputFormat = "audio-16khz-128kbitrate-mono-mp3"
 	// ttsPath is appended to the region-specific base URL.
 	ttsPath = "/cognitiveservices/v1"
+	// providerName identifies this package in APIError.Provider.
+	providerName = "microsoft-speech"
 )
 
 // Option configures the Microsoft Azure TTS provider.
@@ -143,8 +145,11 @@ func (p *Provider) doRequest(ctx context.Context, text string, cfg *audioConfig)
 		return nil, fmt.Errorf("microsoft speech: request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("microsoft speech: %w", sdk.NewAPIErrorFromResponse(resp))
+		defer resp.Body.Close()
+		// The text to speech REST API documents only status codes, no error
+		// body or request ID header, so the status alone sets the Kind:
+		// https://learn.microsoft.com/azure/ai-services/speech-service/rest-text-to-speech#http-status-codes
+		return nil, fmt.Errorf("microsoft speech: synthesize: %w", utils.NewHTTPError(providerName, resp, nil))
 	}
 	return resp.Body, nil
 }

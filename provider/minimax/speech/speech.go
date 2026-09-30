@@ -11,9 +11,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
+	"github.com/felinics/twilight/internal/utils"
 	sdk "github.com/felinics/twilight/sdk"
 )
 
@@ -82,10 +84,7 @@ type t2aResponse struct {
 	Data struct {
 		Audio string `json:"audio"` // hex-encoded audio bytes
 	} `json:"data"`
-	BaseResp struct {
-		StatusCode int    `json:"status_code"`
-		StatusMsg  string `json:"status_msg"`
-	} `json:"base_resp"`
+	errorBody
 }
 
 // DoSynthesize synthesizes speech and returns the complete audio bytes.
@@ -168,16 +167,19 @@ func (p *Provider) synthesize(ctx context.Context, text string, cfg *audioConfig
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("minimax speech: %w", sdk.NewAPIErrorFromResponse(resp))
+		return nil, fmt.Errorf("minimax speech: synthesize: %w", utils.NewHTTPError(providerName, resp, decodeError))
 	}
 
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("minimax speech: read response: %w", err)
+	}
 	var result t2aResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(raw, &result); err != nil {
 		return nil, fmt.Errorf("minimax speech: decode response: %w", err)
 	}
 	if result.BaseResp.StatusCode != 0 {
-		return nil, fmt.Errorf("minimax speech: request failed (code %d): %s",
-			result.BaseResp.StatusCode, result.BaseResp.StatusMsg)
+		return nil, fmt.Errorf("minimax speech: synthesize: %w", bodyError(resp.Header, raw))
 	}
 	if result.Data.Audio == "" {
 		return nil, fmt.Errorf("minimax speech: empty audio in response")

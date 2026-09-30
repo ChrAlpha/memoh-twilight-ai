@@ -4,7 +4,11 @@ import "context"
 
 // VideoProvider is the interface that asynchronous video generation backends
 // must implement.
+//
+// Name identifies the backend in APIError.Provider, including for the
+// APIError that GenerateVideo returns when a job fails.
 type VideoProvider interface {
+	Name() string
 	ListModels(ctx context.Context) ([]*VideoModel, error)
 	DoCreate(ctx context.Context, params VideoParams) (*VideoJob, error)
 	DoGet(ctx context.Context, model *VideoModel, id string) (*VideoJob, error)
@@ -95,10 +99,17 @@ type VideoOutput struct {
 	ProviderMetadata ProviderMetadata
 }
 
-// VideoError is a provider-normalized error payload for failed jobs.
+// VideoError describes why a job failed, as the provider reported it in the
+// job's state. It is part of the job data returned by CreateVideo and GetVideo;
+// GenerateVideo also returns it as a *APIError.
 type VideoError struct {
+	// Code and Message are the provider's own, copied verbatim. Either may be
+	// empty.
 	Code    string
 	Message string
+	// Kind is the SDK's cross-provider classification of Code. It is
+	// KindUnknown when the provider has no mapping for it.
+	Kind ErrorKind
 }
 
 // VideoResult is returned by GenerateVideo. Data is populated only when

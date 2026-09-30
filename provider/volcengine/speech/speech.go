@@ -13,10 +13,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
+	"github.com/felinics/twilight/internal/utils"
 	sdk "github.com/felinics/twilight/sdk"
 )
 
@@ -104,12 +108,10 @@ func (p *Provider) ListModels(context.Context) ([]*sdk.SpeechModel, error) {
 
 // invokeResponse is the JSON structure returned by SAMI /api/v1/invoke.
 type invokeResponse struct {
-	StatusCode int32   `json:"status_code"`
-	StatusText string  `json:"status_text"`
-	TaskID     string  `json:"task_id"`
-	Namespace  string  `json:"namespace"`
-	Data       []byte  `json:"data"` // raw bytes; JSON unmarshaler decodes base64 automatically
-	Payload    *string `json:"payload,omitempty"`
+	samiStatus
+	Namespace string  `json:"namespace"`
+	Data      []byte  `json:"data"` // raw bytes; JSON unmarshaler decodes base64 automatically
+	Payload   *string `json:"payload,omitempty"`
 }
 
 // DoSynthesize synthesizes speech and returns the complete audio bytes.
@@ -176,11 +178,15 @@ func (p *Provider) synthesize(ctx context.Context, text string, cfg audioConfig)
 		return nil, fmt.Errorf("volcengine speech: marshal request body: %w", err)
 	}
 
-	invokeURL := fmt.Sprintf("%s/api/v1/invoke?version=%s&token=%s&appkey=%s&namespace=%s",
-		p.baseURL, samiAPIVersion,
-		token, p.appKey, samiNamespace)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, invokeURL, bytes.NewReader(reqBodyJSON))
+	// SAMI takes the token and app key in the query string.
+	endpoint := p.baseURL + "/api/v1/invoke"
+	query := url.Values{
+		"version":   {samiAPIVersion},
+		"token":     {token},
+		"appkey":    {p.appKey},
+		"namespace": {samiNamespace},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"?"+query.Encode(), bytes.NewReader(reqBodyJSON))
 	if err != nil {
 		return nil, fmt.Errorf("volcengine speech: build request: %w", err)
 	}
@@ -188,21 +194,30 @@ func (p *Provider) synthesize(ctx context.Context, text string, cfg audioConfig)
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
+		// *url.Error prints the request URL, which carries the token.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			urlErr.URL = endpoint
+		}
 		return nil, fmt.Errorf("volcengine speech: request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("volcengine speech: %w", sdk.NewAPIErrorFromResponse(resp))
+		return nil, fmt.Errorf("volcengine speech: synthesize: %w", utils.NewHTTPError(providerName, resp, decodeInvokeError))
 	}
 
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("volcengine speech: read response: %w", err)
+	}
 	// The Go JSON unmarshaler automatically base64-decodes []byte fields.
 	var result invokeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(raw, &result); err != nil {
 		return nil, fmt.Errorf("volcengine speech: decode response: %w", err)
 	}
-	if result.StatusCode != 0 && result.StatusCode != 20000000 {
-		return nil, fmt.Errorf("volcengine speech: request failed (code %d): %s", result.StatusCode, result.StatusText)
+	if result.failed() {
+		return nil, fmt.Errorf("volcengine speech: synthesize: %w", bodyError(resp.Header, raw, decodeInvokeError))
 	}
 	if len(result.Data) == 0 {
 		return nil, fmt.Errorf("volcengine speech: empty audio in response")

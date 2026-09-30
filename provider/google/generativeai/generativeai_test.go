@@ -3,6 +3,7 @@ package generativeai_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -813,15 +814,19 @@ func TestDoStream_FlushOnAbruptEnd(t *testing.T) {
 		t.Fatalf("DoStream: %v", err)
 	}
 
-	var gotReasoningEnd, gotTextEnd, gotFinish bool
+	var gotReasoningEnd, gotTextEnd bool
+	var finish *sdk.FinishPart
+	var failures []error
 	for part := range sr {
-		switch part.(type) {
+		switch part := part.(type) {
 		case *sdk.ReasoningEndPart:
 			gotReasoningEnd = true
 		case *sdk.TextEndPart:
 			gotTextEnd = true
+		case *sdk.ErrorPart:
+			failures = append(failures, part.Error)
 		case *sdk.FinishPart:
-			gotFinish = true
+			finish = part
 		}
 	}
 
@@ -831,8 +836,36 @@ func TestDoStream_FlushOnAbruptEnd(t *testing.T) {
 	if !gotTextEnd {
 		t.Error("missing TextEndPart on abrupt stream end")
 	}
-	if !gotFinish {
-		t.Error("missing FinishPart on abrupt stream end")
+	if len(failures) != 1 || !errors.Is(failures[0], sdk.ErrStreamIncomplete) {
+		t.Errorf("ErrorParts = %v, want one wrapping sdk.ErrStreamIncomplete", failures)
+	}
+	if finish == nil || finish.FinishReason != sdk.FinishReasonError {
+		t.Errorf("FinishPart = %+v, want one with FinishReasonError", finish)
+	}
+}
+
+// A blocked prompt returns no candidates, only promptFeedback.blockReason
+// (https://ai.google.dev/api/generate-content#PromptFeedback). The stream is
+// complete, not truncated.
+func TestDoStream_BlockedPromptIsComplete(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\n", `{"promptFeedback":{"blockReason":"SAFETY"},"usageMetadata":{"promptTokenCount":4,"totalTokenCount":4}}`)
+	}))
+	defer srv.Close()
+
+	p := generativeai.New(generativeai.WithAPIKey("k"), generativeai.WithBaseURL(srv.URL))
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model:    "m",
+		Messages: []sdk.Message{sdk.UserMessage("hi")},
+	})
+	if err != nil {
+		t.Fatalf("DoStream: %v", err)
+	}
+	for part := range sr {
+		if e, ok := part.(*sdk.ErrorPart); ok {
+			t.Errorf("unexpected ErrorPart: %v", e.Error)
+		}
 	}
 }
 
@@ -1351,9 +1384,8 @@ func TestProviderTest_OK(t *testing.T) {
 		generativeai.WithBaseURL(srv.URL),
 	)
 
-	result := p.Test(context.Background())
-	if result.Status != sdk.ProviderStatusOK {
-		t.Errorf("expected status OK, got %q", result.Status)
+	if err := p.Test(context.Background()); err != nil {
+		t.Errorf("Test() = %v, want nil", err)
 	}
 }
 
@@ -1369,9 +1401,9 @@ func TestProviderTest_Unhealthy(t *testing.T) {
 		generativeai.WithBaseURL(srv.URL),
 	)
 
-	result := p.Test(context.Background())
-	if result.Status != sdk.ProviderStatusUnhealthy {
-		t.Errorf("expected status Unhealthy, got %q", result.Status)
+	err := p.Test(context.Background())
+	if kind := sdk.KindOf(err); kind != sdk.KindPermissionDenied {
+		t.Errorf("KindOf(Test()) = %q, want %q (err %v)", kind, sdk.KindPermissionDenied, err)
 	}
 }
 
@@ -1381,9 +1413,9 @@ func TestProviderTest_Unreachable(t *testing.T) {
 		generativeai.WithBaseURL("http://127.0.0.1:1"),
 	)
 
-	result := p.Test(context.Background())
-	if result.Status != sdk.ProviderStatusUnreachable {
-		t.Errorf("expected status Unreachable, got %q", result.Status)
+	err := p.Test(context.Background())
+	if err == nil || sdk.KindOf(err) != sdk.KindUnknown {
+		t.Errorf("Test() = %v, want a transport error with no APIError Kind", err)
 	}
 }
 

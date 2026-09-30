@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
+	"github.com/felinics/twilight/internal/utils"
 	sdk "github.com/felinics/twilight/sdk"
 )
 
@@ -22,6 +24,11 @@ const (
 	defaultFormat     = "wav"
 	speechContentType = "audio/wav"
 	pcmSampleRate     = uint32(24000)
+
+	// providerName identifies this package in APIError.Provider. MiMo
+	// publishes no error reference; its /chat/completions endpoint is
+	// OpenAI-compatible and answers errors in OpenAI's envelope.
+	providerName = "mimo-speech"
 )
 
 type Option func(*Provider)
@@ -171,8 +178,8 @@ func (p *Provider) doRequest(ctx context.Context, reqBody map[string]any) (*http
 		return nil, fmt.Errorf("mimo speech: request: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("mimo speech: %w", sdk.NewAPIErrorFromResponse(resp))
+		defer resp.Body.Close()
+		return nil, fmt.Errorf("mimo speech: synthesize: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeOpenAI))
 	}
 	return resp, nil
 }

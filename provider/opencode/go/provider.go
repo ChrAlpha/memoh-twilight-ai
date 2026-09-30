@@ -5,7 +5,6 @@ package opencodego
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -131,22 +130,14 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	return models, nil
 }
 
-// Test checks reachability through the public models endpoint. Use TestModel
-// with a session context to validate credentials and actual generation.
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
-	_, err := p.ListModels(ctx)
-	if err == nil {
-		return &sdk.ProviderTestResult{
-			Status:  sdk.ProviderStatusOK,
-			Message: "models endpoint reachable; use TestModel to verify authentication and generation",
-		}
+// Test checks reachability through the public models endpoint, so nil does not
+// validate credentials. Use TestModel with a session context to validate
+// credentials and actual generation.
+func (p *Provider) Test(ctx context.Context) error {
+	if _, err := p.ListModels(ctx); err != nil {
+		return fmt.Errorf("opencode-go: test: %w", err)
 	}
-	status := sdk.ProviderStatusUnreachable
-	var apiErr *sdk.APIError
-	if errors.As(err, &apiErr) {
-		status = sdk.ProviderStatusUnhealthy
-	}
-	return &sdk.ProviderTestResult{Status: status, Message: err.Error(), Error: err}
+	return nil
 }
 
 // TestModel makes a small generation request using the model's actual protocol.

@@ -4,10 +4,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/felinics/twilight/provider/anthropic/messages"
+	arkvideos "github.com/felinics/twilight/provider/ark/videos"
 	"github.com/felinics/twilight/provider/github/copilot"
 	"github.com/felinics/twilight/provider/google/generativeai"
 	"github.com/felinics/twilight/provider/openai/codex"
@@ -17,6 +19,7 @@ import (
 	"github.com/felinics/twilight/provider/openai/responses"
 	"github.com/felinics/twilight/provider/openai/speech"
 	"github.com/felinics/twilight/provider/openai/transcription"
+	opencodego "github.com/felinics/twilight/provider/opencode/go"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -218,6 +221,110 @@ func TestRequestHeadersBeforeBedrockSigning(t *testing.T) {
 		h := <-seen
 		if h.Get("X-Trace") != "signed" || h.Get("X-Provider") != "kept" || !strings.HasPrefix(h.Get("Authorization"), "AWS4-HMAC-SHA256 ") || !strings.Contains(h.Get("Authorization"), "x-trace") {
 			t.Errorf("incorrect signed headers: %v", h)
+		}
+	}
+}
+
+func TestClientRequestID(t *testing.T) {
+	const id = "client-id"
+	req := sdk.Request{Model: "model", Messages: []sdk.Message{sdk.UserMessage("hi")}}
+	cases := []struct {
+		name   string
+		header string // "" for a provider that must not send the ID
+		call   func(context.Context, string)
+	}{
+		{"completions", "X-Client-Request-Id", func(ctx context.Context, url string) {
+			_, _ = completions.New(completions.WithBaseURL(url), completions.WithAPIKey("key")).DoGenerate(ctx, req)
+		}},
+		{"responses", "X-Client-Request-Id", func(ctx context.Context, url string) {
+			_, _ = responses.New(responses.WithBaseURL(url), responses.WithAPIKey("key")).DoGenerate(ctx, req)
+		}},
+		{"embedding", "X-Client-Request-Id", func(ctx context.Context, url string) {
+			p := embedding.New(embedding.WithBaseURL(url))
+			_, _ = p.DoEmbed(ctx, sdk.EmbedParams{Model: p.EmbeddingModel("model"), Values: []string{"hi"}})
+		}},
+		{"image-generate", "X-Client-Request-Id", func(ctx context.Context, url string) {
+			p := images.New(images.WithBaseURL(url))
+			_, _ = p.DoGenerate(ctx, &sdk.ImageGenerationParams{Model: p.GenerationModel("model"), Prompt: "hi"})
+		}},
+		{"image-edit-multipart", "X-Client-Request-Id", func(ctx context.Context, url string) {
+			p := images.New(images.WithBaseURL(url))
+			_, _ = p.DoEdit(ctx, &sdk.ImageEditParams{Model: p.EditModel("model"), Prompt: "hi", Images: []sdk.ImageInput{{Data: []byte("image"), Filename: "image.png"}}})
+		}},
+		{"speech", "X-Client-Request-Id", func(ctx context.Context, url string) {
+			p := speech.New(speech.WithBaseURL(url))
+			_, _ = p.DoSynthesize(ctx, sdk.SpeechParams{Model: p.SpeechModel("tts-1"), Text: "hi"})
+		}},
+		{"transcription", "X-Client-Request-Id", func(ctx context.Context, url string) {
+			p := transcription.New(transcription.WithBaseURL(url))
+			_, _ = p.DoTranscribe(ctx, sdk.TranscriptionParams{Model: p.TranscriptionModel("whisper-1"), Audio: []byte("audio"), Filename: "audio.wav"})
+		}},
+		{"opencode-go-completions", "X-Client-Request-Id", func(ctx context.Context, url string) {
+			p := opencodego.New(opencodego.WithBaseURL(url))
+			_, _ = p.ChatModel("glm-5.2").Generate(ctx, sdk.Request{Messages: req.Messages})
+		}},
+		{"ark-video-create", "X-Client-Request-Id", func(ctx context.Context, url string) {
+			p := arkvideos.New(arkvideos.WithBaseURL(url), arkvideos.WithAPIKey("key"))
+			_, _ = p.DoCreate(ctx, sdk.VideoParams{Model: p.VideoModel("model"), Prompt: "hi"})
+		}},
+		{"copilot", "X-Request-Id", func(ctx context.Context, url string) {
+			_, _ = copilot.New(copilot.WithBaseURL(url), copilot.WithAPIKey("key")).DoGenerate(ctx, req)
+		}},
+		{"messages", "", func(ctx context.Context, url string) {
+			_, _ = messages.New(messages.WithBaseURL(url), messages.WithAPIKey("key")).DoGenerate(ctx, req)
+		}},
+		{"google", "", func(ctx context.Context, url string) {
+			_, _ = generativeai.New(generativeai.WithBaseURL(url), generativeai.WithAPIKey("key")).DoGenerate(ctx, req)
+		}},
+		{"codex", "", func(ctx context.Context, url string) {
+			_, _ = codex.New(codex.WithBaseURL(url), codex.WithAPIKey("key")).DoGenerate(ctx, req)
+		}},
+		{"opencode-go-messages", "", func(ctx context.Context, url string) {
+			p := opencodego.New(opencodego.WithBaseURL(url))
+			_, _ = p.ChatModel("minimax-m2.7").Generate(ctx, sdk.Request{Messages: req.Messages})
+		}},
+	}
+	contexts := []struct {
+		name string
+		ctx  context.Context
+		want string
+	}{
+		{"set", sdk.WithClientRequestID(context.Background(), id), id},
+		{"overrides-request-header", sdk.WithClientRequestID(sdk.WithRequestHeaders(context.Background(), map[string]string{
+			"x-client-request-id": "stale", "x-request-id": "stale",
+		}), id), id},
+		{"cleared", sdk.WithClientRequestID(sdk.WithClientRequestID(context.Background(), id), ""), ""},
+		{"unset", context.Background(), ""},
+	}
+	for _, tc := range cases {
+		for _, c := range contexts {
+			t.Run(tc.name+"/"+c.name, func(t *testing.T) {
+				seen := make(chan http.Header, 1)
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					seen <- r.Header.Clone()
+					http.Error(w, "observed", http.StatusTeapot)
+				}))
+				defer srv.Close()
+				tc.call(c.ctx, srv.URL)
+				if len(seen) != 1 {
+					t.Fatal("request did not reach server")
+				}
+				h := <-seen
+				if tc.header != "" {
+					var want []string
+					if c.want != "" {
+						want = []string{c.want}
+					}
+					if got := h.Values(tc.header); !slices.Equal(got, want) {
+						t.Errorf("%s = %q, want %q", tc.header, got, want)
+					}
+				}
+				for name, values := range h {
+					if name != http.CanonicalHeaderKey(tc.header) && slices.Contains(values, id) {
+						t.Errorf("client request ID sent as %s", name)
+					}
+				}
+			})
 		}
 	}
 }

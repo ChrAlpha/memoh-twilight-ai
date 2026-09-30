@@ -24,3 +24,23 @@ import (
 func WithRequestHeaders(ctx context.Context, headers map[string]string) context.Context {
 	return reqheaders.WithContext(ctx, headers)
 }
+
+// WithClientRequestID returns a context that sends id, an identifier the caller
+// chooses, with each provider request made with the context. A provider that
+// records it can find a request that failed without a response, for example one
+// that timed out, so quote the ID in support requests.
+//
+// The OpenAI providers except Codex send it as X-Client-Request-Id, whichever
+// endpoint they are configured for; OpenCode Go sends it for models routed to
+// Completions or Responses. Ark video sends X-Client-Request-Id and GitHub
+// Copilot sends X-Request-Id. Other providers do not send it. It overrides a
+// header of the same name set with WithRequestHeaders. An empty id clears an
+// inherited one.
+//
+// OpenAI expects a unique ID per request, of at most 512 ASCII characters.
+// Derive a context with a new ID for every call rather than setting one on a
+// context shared by a conversation. GenerateVideo sends it only with the
+// request that creates the job.
+func WithClientRequestID(ctx context.Context, id string) context.Context {
+	return reqheaders.WithClientRequestID(ctx, id)
+}

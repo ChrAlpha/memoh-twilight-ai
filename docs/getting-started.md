@@ -132,14 +132,17 @@ To collect the whole stream without handling parts, `sdk.CollectStream(ctx, stre
 Before making generation requests, you can verify that your API key and endpoint are working:
 
 ```go
-result := provider.Test(ctx)
-switch result.Status {
-case sdk.ProviderStatusOK:
+err := provider.Test(ctx)
+var apiErr *sdk.APIError
+switch {
+case err == nil:
     fmt.Println("Ready to go!")
-case sdk.ProviderStatusUnhealthy:
-    fmt.Printf("Connected but auth failed: %s\n", result.Message)
-case sdk.ProviderStatusUnreachable:
-    fmt.Printf("Cannot reach endpoint: %s\n", result.Message)
+case sdk.KindOf(err) == sdk.KindAuthentication:
+    fmt.Printf("Connected but auth failed: %v\n", err)
+case errors.As(err, &apiErr):
+    fmt.Printf("Connected but the check failed (HTTP %d): %v\n", apiErr.StatusCode, err)
+default:
+    fmt.Printf("Cannot reach endpoint: %v\n", err)
 }
 ```
 

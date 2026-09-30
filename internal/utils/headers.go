@@ -25,3 +25,17 @@ func SetHeaders(req *http.Request, headers map[string]string) {
 		req.Header.Set(key, value)
 	}
 }
+
+// ClientRequestIDHeader is the header OpenAI and Ark read a caller-chosen
+// request ID from.
+const ClientRequestIDHeader = "X-Client-Request-Id"
+
+// AddClientRequestID sets the context's client request ID on headers under
+// name, overriding a header of that name, and returns headers. It leaves
+// headers unchanged when the context carries no ID.
+func AddClientRequestID(ctx context.Context, headers map[string]string, name string) map[string]string {
+	if id := reqheaders.ClientRequestID(ctx); id != "" {
+		headers[http.CanonicalHeaderKey(name)] = id
+	}
+	return headers
+}

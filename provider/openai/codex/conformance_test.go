@@ -94,14 +94,53 @@ func assertCodexRequest(t *testing.T, r *http.Request) {
 	}
 }
 
-// conformanceError is a provider-shaped failure. The Codex endpoint reports an
-// expired or invalid access token as a non-2xx JSON body, which utils.FetchSSE
-// promotes to *sdk.APIError (utils.parseAPIError); the provider must surface
-// that as an error rather than an empty success.
+// conformanceError answers with the ChatGPT plan limit error. The body is the
+// one the Codex CLI's own tests feed its HTTP error mapper:
+// https://github.com/openai/codex/blob/44fe510ce3ee61c8ef623adcbf89b901c73ddd61/codex-rs/codex-api/src/api_bridge_tests.rs
+// (map_api_error_does_not_fallback_limit_name_to_limit_id). FetchSSE turns
+// the 429 into an *sdk.APIError before any event is read.
 func conformanceError(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
-	_, _ = w.Write([]byte(`{"error":{"message":"invalid access token","type":"invalid_request_error","code":"invalid_api_key"}}`))
+	w.Header().Set("x-request-id", "req_conformance_429")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_, _ = w.Write([]byte(`{"error":{"type":"usage_limit_reached","plan_type":"pro"}}`))
+}
+
+// conformanceWantError is what conformanceError decodes to: the plan limit is
+// a quota, not a transient rate limit, whatever the 429 says.
+func conformanceWantError() *sdk.APIError {
+	return &sdk.APIError{
+		Provider:   "openai-codex",
+		StatusCode: http.StatusTooManyRequests,
+		Type:       "usage_limit_reached",
+		RequestID:  "req_conformance_429",
+		Kind:       sdk.KindQuotaExhausted,
+	}
+}
+
+// codexFailedMessage and codexFailedEvent are the Codex CLI's response.failed
+// test fixture, verbatim:
+// https://github.com/openai/codex/blob/1b1835f751ebdc0cfc50b3fe55d4571dbb294563/codex-rs/codex-api/src/sse/responses.rs
+const (
+	codexFailedMessage = "Rate limit reached for gpt-5.1 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."
+	codexFailedEvent   = `{"type":"response.failed","sequence_number":3,"response":{"id":"resp_689bcf18d7f08194bf3440ba62fe05d803fee0cdac429894","object":"response","created_at":1755041560,"status":"failed","background":false,"error":{"code":"rate_limit_exceeded","message":"` + codexFailedMessage + `"}, "usage":null,"user":null,"metadata":{}}}`
+)
+
+// conformanceFailed answers with a stream that fails after it started. It
+// serves both paths, since sdk.Generate streams too.
+func conformanceFailed(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("x-request-id", "req_conformance_failed")
+	openCodexStream(w)
+	codexSSE(w, "response.created", codexCreated("resp_conf_failed"))
+	codexSSE(w, "response.failed", codexFailedEvent)
+}
+
+// conformanceIncomplete answers with a stream that closes before
+// response.completed.
+func conformanceIncomplete(w http.ResponseWriter, r *http.Request) {
+	openCodexStream(w)
+	codexSSE(w, "response.created", codexCreated("resp_conf_text"))
+	codexSSE(w, "response.output_text.delta", `{"item_id":"msg_conf_1","delta":"conformance"}`)
 }
 
 // textFixture answers with plain text. The answer arrives split across two
@@ -124,6 +163,19 @@ func textFixture(t *testing.T) providertest.Fixture {
 		Reply:       reply,
 		ReplyStream: reply,
 		ReplyError:  conformanceError,
+		WantError:   conformanceWantError(),
+		// Generate streams, so the failed stream answers both paths.
+		ReplyErrorBody:  conformanceFailed,
+		ReplyErrorEvent: conformanceFailed,
+		WantInBandError: &sdk.APIError{
+			Provider:  "openai-codex",
+			Code:      "rate_limit_exceeded",
+			Message:   codexFailedMessage,
+			RequestID: "req_conformance_failed",
+			Kind:      sdk.KindRateLimited,
+		},
+		ReplyStreamIncomplete: conformanceIncomplete,
+		Secret:                "test-key",
 		Want: providertest.Want{
 			Text:         "conformance text",
 			FinishReason: sdk.FinishReasonStop,
@@ -162,6 +214,8 @@ func toolCallFixture(t *testing.T) providertest.Fixture {
 		Reply:       reply,
 		ReplyStream: reply,
 		ReplyError:  conformanceError,
+		WantError:   conformanceWantError(),
+		Secret:      "test-key",
 		Want: providertest.Want{
 			FinishReason: sdk.FinishReasonToolCalls,
 			TotalTokens:  7,

@@ -10,8 +10,13 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
+	"github.com/felinics/twilight/internal/utils"
 	sdk "github.com/felinics/twilight/sdk"
 )
+
+// providerName identifies this package in APIError.Provider.
+const providerName = "deepgram-transcription"
 
 const (
 	defaultModelID = "nova-3"
@@ -60,7 +65,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.TranscriptionModel, e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("deepgram transcription: %w", sdk.NewAPIErrorFromResponse(resp))
+		return nil, fmt.Errorf("deepgram transcription: list models: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeDeepgram))
 	}
 
 	var payload deepgramModelsResponse
@@ -167,7 +172,7 @@ func (p *Provider) DoTranscribe(ctx context.Context, params sdk.TranscriptionPar
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("deepgram transcription: %w", sdk.NewAPIErrorFromResponse(resp))
+		return nil, fmt.Errorf("deepgram transcription: transcribe: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeDeepgram))
 	}
 
 	var payload struct {

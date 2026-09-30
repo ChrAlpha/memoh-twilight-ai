@@ -5,11 +5,17 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
 	"github.com/felinics/twilight/sdk"
 )
 
-const defaultBaseURL = "https://api.openai.com/v1"
+const (
+	defaultBaseURL = "https://api.openai.com/v1"
+
+	// providerName identifies this package in APIError.Provider.
+	providerName = "openai-images"
+)
 
 // Provider implements sdk.ImageGenerationProvider and sdk.ImageEditProvider
 // for the OpenAI Images API.
@@ -93,11 +99,13 @@ func (p *Provider) DoGenerate(ctx context.Context, params *sdk.ImageGenerationPa
 	}
 
 	resp, err := utils.FetchJSON[imagesResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/images/generations",
-		Headers: p.requestHeaders(ctx),
-		Body:    req,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/images/generations",
+		Headers:     p.requestHeaders(ctx),
+		Body:        req,
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openai images: generation request failed: %w", err)
@@ -145,11 +153,13 @@ func (p *Provider) doEditJSON(ctx context.Context, params *sdk.ImageEditParams) 
 	}
 
 	resp, err := utils.FetchJSON[imagesResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/images/edits",
-		Headers: p.requestHeaders(ctx),
-		Body:    req,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/images/edits",
+		Headers:     p.requestHeaders(ctx),
+		Body:        req,
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openai images: edit request failed: %w", err)
@@ -207,5 +217,6 @@ func needsMultipart(params *sdk.ImageEditParams) bool {
 }
 
 func (p *Provider) requestHeaders(ctx context.Context) map[string]string {
-	return utils.RequestHeaders(ctx, utils.AuthHeader(p.apiKey), p.headers)
+	headers := utils.RequestHeaders(ctx, utils.AuthHeader(p.apiKey), p.headers)
+	return utils.AddClientRequestID(ctx, headers, utils.ClientRequestIDHeader)
 }

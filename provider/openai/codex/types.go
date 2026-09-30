@@ -139,14 +139,6 @@ type codexCompletedChunk struct {
 	} `json:"response"`
 }
 
-type codexErrorChunk struct {
-	Error struct {
-		Type    string `json:"type"`
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
 type codexIncompleteDetails struct {
 	Reason string `json:"reason"`
 }

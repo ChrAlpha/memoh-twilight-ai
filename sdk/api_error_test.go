@@ -1,120 +1,136 @@
 package sdk_test
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
-	"unicode/utf8"
+	"time"
 
 	"github.com/felinics/twilight/sdk"
 )
 
-func TestAPIErrorError(t *testing.T) {
+func TestAPIErrorRetryAfter(t *testing.T) {
+	future := time.Now().Add(90 * time.Second).UTC().Format(http.TimeFormat)
+	past := time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat)
+	tests := []struct {
+		name    string
+		header  http.Header
+		want    time.Duration
+		wantOK  bool
+		between [2]time.Duration
+	}{
+		{name: "retry-after-ms", header: http.Header{"Retry-After-Ms": {"1500"}}, want: 1500 * time.Millisecond, wantOK: true},
+		{name: "fractional retry-after-ms", header: http.Header{"Retry-After-Ms": {"2.5"}}, want: 2500 * time.Microsecond, wantOK: true},
+		{name: "seconds", header: http.Header{"Retry-After": {"20"}}, want: 20 * time.Second, wantOK: true},
+		{name: "retry-after-ms wins over seconds", header: http.Header{"Retry-After-Ms": {"250"}, "Retry-After": {"20"}}, want: 250 * time.Millisecond, wantOK: true},
+		{name: "unparsable retry-after-ms falls back to seconds", header: http.Header{"Retry-After-Ms": {"soon"}, "Retry-After": {"3"}}, want: 3 * time.Second, wantOK: true},
+		{name: "http date", header: http.Header{"Retry-After": {future}}, wantOK: true, between: [2]time.Duration{80 * time.Second, 90 * time.Second}},
+		{name: "http date in the past", header: http.Header{"Retry-After": {past}}, want: 0, wantOK: true},
+		{name: "absent", header: http.Header{}, wantOK: false},
+		{name: "nil header", header: nil, wantOK: false},
+		{name: "unparsable", header: http.Header{"Retry-After": {"later"}}, wantOK: false},
+		{name: "negative seconds", header: http.Header{"Retry-After": {"-5"}}, wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := (&sdk.APIError{Header: tt.header}).RetryAfter()
+			if ok != tt.wantOK {
+				t.Fatalf("RetryAfter() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if tt.between != [2]time.Duration{} {
+				if got < tt.between[0] || got > tt.between[1] {
+					t.Fatalf("RetryAfter() = %v, want within %v", got, tt.between)
+				}
+				return
+			}
+			if got != tt.want {
+				t.Fatalf("RetryAfter() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAPIErrorErrorText(t *testing.T) {
 	tests := []struct {
 		name string
 		err  *sdk.APIError
 		want string
 	}{
 		{
-			name: "message wins",
-			err:  &sdk.APIError{StatusCode: 429, Status: "429 Too Many Requests", Message: "rate limited"},
-			want: "api error 429: rate limited",
+			name: "all parts",
+			err:  &sdk.APIError{Provider: "anthropic-messages", StatusCode: 429, Type: "rate_limit_error", Message: "slow down", RequestID: "req_1"},
+			want: "anthropic-messages: 429 rate_limit_error: slow down (request-id req_1)",
 		},
 		{
-			name: "status text fallback",
-			err:  &sdk.APIError{StatusCode: 502, Status: "502 Bad Gateway"},
-			want: "api error 502: Bad Gateway",
+			name: "type and code",
+			err:  &sdk.APIError{Provider: "openai-completions", StatusCode: 401, Type: "invalid_request_error", Code: "invalid_api_key", Message: "bad key"},
+			want: "openai-completions: 401 invalid_request_error invalid_api_key: bad key",
 		},
 		{
-			name: "status line fallback for unknown code",
-			err:  &sdk.APIError{StatusCode: 599, Status: "599 Custom"},
-			want: "api error 599: 599 Custom",
+			name: "type equal to code is written once",
+			err:  &sdk.APIError{Provider: "openai-completions", StatusCode: 429, Type: "insufficient_quota", Code: "insufficient_quota"},
+			want: "openai-completions: 429 insufficient_quota",
 		},
 		{
-			name: "body appended",
-			err:  &sdk.APIError{StatusCode: 400, Message: "bad request", RawBody: []byte(`{"error":"x"}`)},
-			want: `api error 400: bad request [body: {"error":"x"}]`,
+			name: "no status",
+			err:  &sdk.APIError{Provider: "anthropic-messages", Type: "overloaded_error", Message: "Overloaded"},
+			want: "anthropic-messages: error overloaded_error: Overloaded",
+		},
+		{
+			name: "status only",
+			err:  &sdk.APIError{StatusCode: 502},
+			want: "502",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.err.Error(); got != tt.want {
-				t.Errorf("Error() = %q, want %q", got, tt.want)
+				t.Fatalf("Error() = %q, want %q", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestAPIErrorErrorBodyTruncation(t *testing.T) {
-	err := &sdk.APIError{StatusCode: 502, RawBody: []byte(strings.Repeat("a", 5000))}
-	got := err.Error()
-	const prefix = "api error 502: Bad Gateway [body: "
-	if !strings.HasPrefix(got, prefix) {
-		t.Fatalf("Error() = %q, want prefix %q", got, prefix)
+func TestAPIErrorTextExcludesBodyAndHeaders(t *testing.T) {
+	const bodySecret = "body-marker-7f3a"
+	const headerSecret = "header-marker-7f3a"
+	err := &sdk.APIError{
+		Provider:   "openai-completions",
+		StatusCode: 400,
+		Message:    "bad request",
+		Header:     http.Header{"X-Echo": {headerSecret}, "Retry-After": {"1"}},
+		Body:       []byte(`{"error":{"message":"bad request","prompt":"` + bodySecret + `"}}`),
 	}
-	if !strings.Contains(got, "...(truncated)") {
-		t.Errorf("Error() = %q, want truncation marker", got)
-	}
-	excerpt := strings.TrimSuffix(strings.TrimPrefix(got, prefix), "...(truncated)]")
-	if len(excerpt) != 4096 {
-		t.Errorf("excerpt length = %d, want 4096", len(excerpt))
+	wrapped := fmt.Errorf("call failed: %w", err)
+	for _, text := range []string{err.Error(), wrapped.Error(), fmt.Sprintf("%v", err), fmt.Sprintf("%+v", wrapped)} {
+		if strings.Contains(text, bodySecret) || strings.Contains(text, headerSecret) {
+			t.Fatalf("error text %q leaks the body or a header", text)
+		}
 	}
 }
 
-func TestAPIErrorErrorBodyTruncationUTF8(t *testing.T) {
-	t.Run("rune straddling cutoff is dropped", func(t *testing.T) {
-		// "中" is 3 bytes: a byte cut at 4096 would land inside it.
-		body := append([]byte(strings.Repeat("a", 4094)), []byte("中文")...)
-		got := (&sdk.APIError{StatusCode: 500, RawBody: body}).Error()
-		if !utf8.ValidString(got) {
-			t.Errorf("Error() contains invalid UTF-8: %q", got)
-		}
-	})
-	t.Run("pre-existing invalid byte is kept", func(t *testing.T) {
-		// A latin-1/GBK error page must not trigger over-truncation: the
-		// excerpt keeps its full byte budget even with a bad byte in it.
-		body := append([]byte{0xff}, []byte(strings.Repeat("a", 5000))...)
-		got := (&sdk.APIError{StatusCode: 500, RawBody: body}).Error()
-		const marker = " [body: "
-		i := strings.Index(got, marker)
-		if i < 0 {
-			t.Fatalf("Error() = %q, want body excerpt", got)
-		}
-		excerpt := strings.TrimSuffix(got[i+len(marker):], "...(truncated)]")
-		if len(excerpt) != 4096 {
-			t.Errorf("excerpt length = %d, want 4096", len(excerpt))
-		}
-	})
-}
-
-func TestNewAPIError(t *testing.T) {
+func TestKindOf(t *testing.T) {
+	rateLimited := &sdk.APIError{StatusCode: 429, Kind: sdk.KindRateLimited}
 	tests := []struct {
-		name    string
-		body    []byte
-		wantMsg string
+		name string
+		err  error
+		want sdk.ErrorKind
 	}{
-		{name: "error-wrapped message", body: []byte(`{"error":{"message":"bad"}}`), wantMsg: "bad"},
-		{name: "plain message", body: []byte(`{"message":"bad"}`), wantMsg: "bad"},
-		{name: "non-json body", body: []byte("<html>proxy error</html>"), wantMsg: ""},
-		{name: "trailing junk after json", body: []byte(`{"message":"bad"}<html>`), wantMsg: "bad"},
-		{name: "empty body", body: nil, wantMsg: ""},
+		{name: "nil", err: nil, want: sdk.KindUnknown},
+		{name: "not an APIError", err: errors.New("dial tcp: connection refused"), want: sdk.KindUnknown},
+		{name: "direct", err: rateLimited, want: sdk.KindRateLimited},
+		{name: "wrapped", err: fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", rateLimited)), want: sdk.KindRateLimited},
+		{name: "joined", err: errors.Join(errors.New("other"), rateLimited), want: sdk.KindRateLimited},
+		{name: "first in chain wins", err: fmt.Errorf("%w", &sdk.APIError{Kind: sdk.KindAuthentication}), want: sdk.KindAuthentication},
+		{name: "unset kind", err: &sdk.APIError{StatusCode: 400}, want: sdk.KindUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e := sdk.NewAPIError(http.StatusBadRequest, "400 Bad Request", tt.body)
-			if e.StatusCode != http.StatusBadRequest || e.Status != "400 Bad Request" {
-				t.Errorf("got (StatusCode=%d, Status=%q)", e.StatusCode, e.Status)
-			}
-			if e.Message != tt.wantMsg {
-				t.Errorf("Message = %q, want %q", e.Message, tt.wantMsg)
+			if got := sdk.KindOf(tt.err); got != tt.want {
+				t.Fatalf("KindOf() = %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestNewAPIErrorBodyCap(t *testing.T) {
-	e := sdk.NewAPIError(500, "500 Internal Server Error", make([]byte, 70<<10))
-	if len(e.RawBody) != 64<<10 {
-		t.Errorf("RawBody length = %d, want %d", len(e.RawBody), 64<<10)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
 	sdk "github.com/felinics/twilight/sdk"
 )
@@ -19,6 +20,9 @@ import (
 const (
 	defaultModelID = "gpt-4o-mini-transcribe"
 	defaultBaseURL = "https://api.openai.com/v1"
+
+	// providerName identifies this package in APIError.Provider.
+	providerName = "openai-transcription"
 )
 
 type Option func(*Provider)
@@ -72,7 +76,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.TranscriptionModel, e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("openai transcription: %w", sdk.NewAPIErrorFromResponse(resp))
+		return nil, fmt.Errorf("openai transcription: list models: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeOpenAI))
 	}
 
 	rawModels, err := decodeModelIDs(resp.Body)
@@ -159,7 +163,7 @@ func (p *Provider) DoTranscribe(ctx context.Context, params sdk.TranscriptionPar
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("openai transcription: %w", sdk.NewAPIErrorFromResponse(resp))
+		return nil, fmt.Errorf("openai transcription: transcribe: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeOpenAI))
 	}
 
 	return decodeResponse(resp.Body)
@@ -278,5 +282,6 @@ func decodeResponse(r io.Reader) (*sdk.TranscriptionResult, error) {
 }
 
 func (p *Provider) requestHeaders(ctx context.Context) map[string]string {
-	return utils.RequestHeaders(ctx, utils.AuthHeader(p.apiKey), p.headers)
+	headers := utils.RequestHeaders(ctx, utils.AuthHeader(p.apiKey), p.headers)
+	return utils.AddClientRequestID(ctx, headers, utils.ClientRequestIDHeader)
 }

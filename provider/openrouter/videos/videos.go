@@ -10,11 +10,15 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
 	"github.com/felinics/twilight/sdk"
 )
 
 const defaultBaseURL = "https://openrouter.ai/api"
+
+// providerName identifies this package in APIError.Provider.
+const providerName = "openrouter-videos"
 
 type Provider struct {
 	apiKey     string
@@ -48,16 +52,23 @@ func New(options ...Option) *Provider {
 	return p
 }
 
+// Name returns the provider name used in APIError.Provider.
+func (p *Provider) Name() string {
+	return providerName
+}
+
 func (p *Provider) VideoModel(id string) *sdk.VideoModel {
 	return &sdk.VideoModel{ID: id, Provider: p}
 }
 
 func (p *Provider) ListModels(ctx context.Context) ([]*sdk.VideoModel, error) {
 	resp, err := utils.FetchJSON[listModelsResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/v1/videos/models",
-		Headers: utils.AuthHeader(p.apiKey),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/v1/videos/models",
+		Headers:     utils.AuthHeader(p.apiKey),
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeOpenRouter,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openrouter videos: list models request failed: %w", err)
@@ -132,11 +143,13 @@ func (p *Provider) DoCreate(ctx context.Context, params sdk.VideoParams) (*sdk.V
 	}
 
 	resp, err := utils.FetchJSON[videoResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/v1/videos",
-		Headers: utils.AuthHeader(p.apiKey),
-		Body:    req,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/v1/videos",
+		Headers:     utils.AuthHeader(p.apiKey),
+		Body:        req,
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeOpenRouter,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openrouter videos: create request failed: %w", err)
@@ -146,10 +159,12 @@ func (p *Provider) DoCreate(ctx context.Context, params sdk.VideoParams) (*sdk.V
 
 func (p *Provider) DoGet(ctx context.Context, model *sdk.VideoModel, id string) (*sdk.VideoJob, error) {
 	resp, err := utils.FetchJSON[videoResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/v1/videos/" + id,
-		Headers: utils.AuthHeader(p.apiKey),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/v1/videos/" + id,
+		Headers:     utils.AuthHeader(p.apiKey),
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeOpenRouter,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openrouter videos: get request failed: %w", err)
@@ -188,7 +203,7 @@ func (p *Provider) DoDownload(ctx context.Context, _ *sdk.VideoModel, output sdk
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", fmt.Errorf("openrouter videos: download failed: %w", sdk.NewAPIErrorFromResponse(resp))
+		return nil, "", fmt.Errorf("openrouter videos: download failed: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeOpenRouter))
 	}
 	data, err = io.ReadAll(resp.Body)
 	if err != nil {
@@ -218,9 +233,9 @@ func toVideoJob(resp *videoResponse, modelID string) *sdk.VideoJob {
 	switch {
 	case strings.EqualFold(strings.TrimSpace(resp.Status), "expired"):
 		// The status is kept as Code so an expired job can be told from a failed one.
-		job.Error = &sdk.VideoError{Code: "expired", Message: resp.Error}
+		job.Error = &sdk.VideoError{Code: "expired", Message: resp.Error, Kind: sdk.KindUnknown}
 	case resp.Error != "":
-		job.Error = &sdk.VideoError{Message: resp.Error}
+		job.Error = &sdk.VideoError{Message: resp.Error, Kind: sdk.KindUnknown}
 	}
 	for _, url := range resp.UnsignedURLs {
 		if strings.TrimSpace(url) == "" {

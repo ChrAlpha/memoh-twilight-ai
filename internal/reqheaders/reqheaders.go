@@ -33,3 +33,18 @@ func FromContext(ctx context.Context) map[string]string {
 	headers, _ := ctx.Value(contextKey{}).(map[string]string)
 	return headers
 }
+
+type clientRequestIDKey struct{}
+
+// WithClientRequestID sets the client request ID carried by ctx, replacing any
+// inherited one. An empty id clears it.
+func WithClientRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, clientRequestIDKey{}, id)
+}
+
+// ClientRequestID returns the client request ID carried by ctx, or "" when
+// there is none.
+func ClientRequestID(ctx context.Context) string {
+	id, _ := ctx.Value(clientRequestIDKey{}).(string)
+	return id
+}

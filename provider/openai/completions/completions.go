@@ -3,10 +3,12 @@ package completions
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/messagecompat"
 	"github.com/felinics/twilight/internal/utils"
 	"github.com/felinics/twilight/sdk"
@@ -135,11 +137,13 @@ func (p *Provider) Name() string {
 
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	resp, err := utils.FetchJSON[modelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Headers: p.requestHeaders(ctx),
-		Prepare: p.prepareRequest,
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models",
+		Headers:     p.requestHeaders(ctx),
+		Prepare:     p.prepareRequest,
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openai: list models request failed: %w", err)
@@ -156,39 +160,44 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	return models, nil
 }
 
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
+func (p *Provider) Test(ctx context.Context) error {
 	_, err := utils.FetchJSON[modelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Query:   map[string]string{"limit": "1"},
-		Headers: p.requestHeaders(ctx),
-		Prepare: p.prepareRequest,
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models",
+		Query:       map[string]string{"limit": "1"},
+		Headers:     p.requestHeaders(ctx),
+		Prepare:     p.prepareRequest,
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
-		return sdk.ClassifyProbeError(err)
+		return fmt.Errorf("openai: test request failed: %w", err)
 	}
-	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
+	return nil
 }
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
 	_, err := utils.FetchJSON[modelObject](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models/" + modelID,
-		Headers: p.requestHeaders(ctx),
-		Prepare: p.prepareRequest,
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models/" + modelID,
+		Headers:     p.requestHeaders(ctx),
+		Prepare:     p.prepareRequest,
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err == nil {
 		return &sdk.ModelTestResult{Supported: true, Message: "supported"}, nil
 	}
-	if !sdk.IsStatus(err, http.StatusNotFound) {
+	var apiErr *sdk.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 		return nil, fmt.Errorf("openai: test model request failed: %w", err)
 	}
 
 	// GET /models/{id} returned 404 — fall back to a minimal generation
 	// request for providers that don't implement the models listing API.
-	status, probeErr := utils.ProbeStatus(ctx, p.httpClient, &utils.RequestOptions{
+	probeErr := utils.Probe(ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
 		Path:    "/chat/completions",
@@ -199,11 +208,14 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 			"messages":   []map[string]string{{"role": "user", "content": "hi"}},
 			"max_tokens": 1,
 		},
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
-	if probeErr != nil {
-		return nil, fmt.Errorf("openai: probe model request failed: %w", probeErr)
+	result, err := sdk.ClassifyProbe(probeErr)
+	if err != nil {
+		return nil, fmt.Errorf("openai: probe model request failed: %w", err)
 	}
-	return sdk.ClassifyProbeStatus(status)
+	return result, nil
 }
 
 // ChatModel creates a Model bound to this provider.
@@ -228,12 +240,14 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 	}
 
 	resp, err := utils.FetchJSON[chatResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/chat/completions",
-		Headers: p.requestHeaders(ctx),
-		Prepare: p.prepareRequest,
-		Body:    chatReq,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/chat/completions",
+		Headers:     p.requestHeaders(ctx),
+		Prepare:     p.prepareRequest,
+		Body:        chatReq,
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
 		return sdk.ModelResult{}, fmt.Errorf("openai: chat completions request failed: %w", err)
@@ -585,35 +599,42 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		}
 
 		err := utils.FetchSSE(ctx, p.httpClient, &utils.RequestOptions{
-			Method:  http.MethodPost,
-			BaseURL: p.baseURL,
-			Path:    "/chat/completions",
-			Headers: p.requestHeaders(ctx),
-			Prepare: p.prepareRequest,
-			Body:    out,
+			Method:      http.MethodPost,
+			BaseURL:     p.baseURL,
+			Path:        "/chat/completions",
+			Headers:     p.requestHeaders(ctx),
+			Prepare:     p.prepareRequest,
+			Body:        out,
+			Provider:    p.Name(),
+			DecodeError: errorformat.DecodeOpenAI,
 		}, func(ev *utils.SSEEvent) error {
 			if ev.Data == "[DONE]" {
+				sp.done = true
 				return utils.ErrStreamDone
 			}
 
 			var chunk chatChunkResponse
 			if err := json.Unmarshal([]byte(ev.Data), &chunk); err != nil {
-				sp.send(&sdk.ErrorPart{Error: fmt.Errorf("openai: unmarshal chunk: %w", err)})
-				return err
+				return fmt.Errorf("unmarshal chunk: %w", err)
 			}
 
 			return sp.processChunk(&chunk)
 		})
 
+		if err == nil && !sp.done {
+			err = sdk.ErrStreamIncomplete
+		}
+		finish := sp.finishReason
 		if err != nil {
 			sp.send(&sdk.ErrorPart{Error: fmt.Errorf("openai: stream failed: %w", err)})
+			finish = sdk.FinishReasonError
 		}
 
 		sp.flush()
 		sp.emitFinishStep()
 
 		sp.send(&sdk.FinishPart{
-			FinishReason:    sp.finishReason,
+			FinishReason:    finish,
 			RawFinishReason: sp.rawFinishReason,
 			TotalUsage:      sp.usage,
 		})
@@ -627,7 +648,8 @@ func (p *Provider) requestHeaders(ctx context.Context) map[string]string {
 	if p.prepareRequest == nil && p.apiKey != "" {
 		defaults = utils.AuthHeader(p.apiKey)
 	}
-	return utils.RequestHeaders(ctx, defaults, p.headers)
+	headers := utils.RequestHeaders(ctx, defaults, p.headers)
+	return utils.AddClientRequestID(ctx, headers, utils.ClientRequestIDHeader)
 }
 
 // streamingToolCall accumulates one function call's argument deltas. args

@@ -384,14 +384,16 @@ Test connectivity and discover available models before making generation request
 provider := completions.New(completions.WithAPIKey("sk-..."))
 
 // Check provider connectivity
-result := provider.Test(context.Background())
-switch result.Status {
-case sdk.ProviderStatusOK:
-    fmt.Println("Provider is healthy")
-case sdk.ProviderStatusUnhealthy:
-    fmt.Println("Connected but unhealthy:", result.Message)
-case sdk.ProviderStatusUnreachable:
-    fmt.Println("Cannot connect:", result.Message)
+if err := provider.Test(context.Background()); err != nil {
+    var apiErr *sdk.APIError
+    switch {
+    case sdk.KindOf(err) == sdk.KindAuthentication, sdk.KindOf(err) == sdk.KindPermissionDenied:
+        fmt.Println("Credentials rejected:", err)
+    case errors.As(err, &apiErr):
+        fmt.Println("Connected but the check failed:", err)
+    default:
+        fmt.Println("Cannot connect:", err)
+    }
 }
 
 // List all available models

@@ -14,9 +14,13 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
 	sdk "github.com/felinics/twilight/sdk"
 )
+
+// providerName identifies this package in APIError.Provider.
+const providerName = "elevenlabs-speech"
 
 const (
 	defaultModelID   = "elevenlabs-tts"
@@ -86,7 +90,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.SpeechModel, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("elevenlabs speech: %w", sdk.NewAPIErrorFromResponse(resp))
+		return nil, fmt.Errorf("elevenlabs speech: list models: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeElevenLabs))
 	}
 
 	rawModels, err := decodeModelsResponse(resp.Body)
@@ -229,9 +233,8 @@ func (p *Provider) doRequest(ctx context.Context, endpoint, text string, cfg *au
 		return nil, fmt.Errorf("elevenlabs speech: request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		apiErr := sdk.NewAPIErrorFromResponse(resp)
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("elevenlabs speech: %w", apiErr)
+		defer resp.Body.Close()
+		return nil, fmt.Errorf("elevenlabs speech: synthesize: %w", utils.NewHTTPError(providerName, resp, errorformat.DecodeElevenLabs))
 	}
 	return resp.Body, nil
 }

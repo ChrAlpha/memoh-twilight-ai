@@ -21,10 +21,29 @@ import (
 // TestDoGenerate_ToolCall / TestDoStream_ToolCall for the tool_use reply, plus
 // TestDoGenerate_ErrorResponse for the error body.
 
-const conformanceModel = "claude-sonnet-4-20250514"
+const (
+	conformanceModel  = "claude-sonnet-4-20250514"
+	conformanceAPIKey = "test-key"
+
+	// conformanceErrorBody and conformanceRequestID are verbatim from
+	// https://platform.claude.com/docs/en/api/errors (Error shapes; Request ID).
+	conformanceErrorBody = `{
+  "type": "error",
+  "error": {
+    "type": "not_found_error",
+    "message": "The requested resource could not be found."
+  },
+  "request_id": "req_011CSHoEeqs5C35K2UUqR7Fy"
+}`
+	conformanceRequestID = "req_018EeWyXxfu5pfWkrYcMdjWG"
+
+	// conformanceErrorEvent is the error event's data, verbatim from
+	// https://platform.claude.com/docs/en/api/messages-streaming#error-events.
+	conformanceErrorEvent = `{"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}`
+)
 
 func conformanceProvider(baseURL string) sdk.Provider {
-	return messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(baseURL))
+	return messages.New(messages.WithAPIKey(conformanceAPIKey), messages.WithBaseURL(baseURL))
 }
 
 // sseEvents writes an Anthropic event stream. Anthropic names every event
@@ -69,9 +88,42 @@ func textFixture(t *testing.T) providertest.Fixture {
 		},
 		ReplyError: func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`))
+			w.Header().Set("request-id", conformanceRequestID)
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(conformanceErrorBody))
 		},
+		WantError: &sdk.APIError{
+			Provider:   "anthropic-messages",
+			StatusCode: http.StatusNotFound,
+			Type:       "not_found_error",
+			Message:    "The requested resource could not be found.",
+			RequestID:  conformanceRequestID,
+			Kind:       sdk.KindUnknown,
+		},
+		// The Messages API reports a non-streaming failure only with an error
+		// status, so there is no ReplyErrorBody.
+		ReplyErrorEvent: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("request-id", conformanceRequestID)
+			sseEvents(w,
+				[2]string{"message_start", `{"type":"message_start","message":{"id":"msg_conf_text","type":"message","model":"` + conformanceModel + `","role":"assistant","content":[],"usage":{"input_tokens":5,"output_tokens":0}}}`},
+				[2]string{"error", conformanceErrorEvent},
+			)
+		},
+		WantInBandError: &sdk.APIError{
+			Provider:  "anthropic-messages",
+			Type:      "overloaded_error",
+			Message:   "Overloaded",
+			RequestID: conformanceRequestID,
+			Kind:      sdk.KindServerError,
+		},
+		ReplyStreamIncomplete: func(w http.ResponseWriter, r *http.Request) {
+			sseEvents(w,
+				[2]string{"message_start", `{"type":"message_start","message":{"id":"msg_conf_text","type":"message","model":"` + conformanceModel + `","role":"assistant","content":[],"usage":{"input_tokens":5,"output_tokens":0}}}`},
+				[2]string{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+				[2]string{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"conformance"}}`},
+			)
+		},
+		Secret: conformanceAPIKey,
 		Want: providertest.Want{
 			Text:         "conformance text",
 			FinishReason: sdk.FinishReasonStop,

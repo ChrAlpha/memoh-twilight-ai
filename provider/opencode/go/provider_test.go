@@ -3,6 +3,7 @@ package opencodego_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -218,9 +219,8 @@ func TestDiscoveryAndProbes(t *testing.T) {
 			t.Error("discovered model not bound to Go provider")
 		}
 	}
-	status := p.Test(context.Background())
-	if status.Status != sdk.ProviderStatusOK || !strings.Contains(status.Message, "TestModel") {
-		t.Fatalf("public catalog test = %+v", status)
+	if err := p.Test(context.Background()); err != nil {
+		t.Fatalf("public catalog test = %v", err)
 	}
 	if _, err := p.TestModel(context.Background(), "glm-5.2"); err == nil {
 		t.Fatal("rejected session was treated as a working model")
@@ -377,19 +377,17 @@ func TestUpstreamErrorsAndCancellation(t *testing.T) {
 				p := opencodego.New(opencodego.WithBaseURL(srv.URL))
 				model := p.ChatModel(route.model)
 				req := sdk.Request{Messages: []sdk.Message{sdk.UserMessage("hi")}}
-				if _, err := model.Generate(context.Background(), req); err == nil {
-					t.Error("generation ignored upstream error")
-				}
-				if sr, err := model.Stream(context.Background(), req); err == nil {
+				_, err := model.Generate(context.Background(), req)
+				checkUpstreamError(t, "generation", err, route.protocol, status)
+				sr, err := model.Stream(context.Background(), req)
+				if err == nil {
 					for range sr.Parts {
 					}
-					if _, err := sr.Result(); err == nil {
-						t.Error("stream ignored upstream error")
-					}
+					_, err = sr.Result()
 				}
-				if _, err := p.TestModel(context.Background(), route.model); err == nil {
-					t.Error("probe ignored upstream error")
-				}
+				checkUpstreamError(t, "stream", err, route.protocol, status)
+				_, err = p.TestModel(context.Background(), route.model)
+				checkUpstreamError(t, "probe", err, route.protocol, status)
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
 				if _, err := model.Generate(ctx, req); err == nil {
@@ -397,6 +395,30 @@ func TestUpstreamErrorsAndCancellation(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// checkUpstreamError asserts that a rejected request surfaces as the
+// *sdk.APIError of the delegate that sent it.
+func checkUpstreamError(t *testing.T, what string, err error, protocol opencodego.Protocol, status int) {
+	t.Helper()
+	delegates := map[opencodego.Protocol]string{
+		opencodego.ProtocolCompletions: "openai-completions",
+		opencodego.ProtocolResponses:   "openai-responses",
+		opencodego.ProtocolMessages:    "anthropic-messages",
+	}
+	kinds := map[int]sdk.ErrorKind{
+		http.StatusUnauthorized:    sdk.KindAuthentication,
+		http.StatusTooManyRequests: sdk.KindRateLimited,
+	}
+	var apiErr *sdk.APIError
+	if !errors.As(err, &apiErr) {
+		t.Errorf("%s error = %v, want *sdk.APIError", what, err)
+		return
+	}
+	if apiErr.Provider != delegates[protocol] || apiErr.StatusCode != status || apiErr.Kind != kinds[status] {
+		t.Errorf("%s error = {Provider: %q, StatusCode: %d, Kind: %q}, want {%q, %d, %q}", what,
+			apiErr.Provider, apiErr.StatusCode, apiErr.Kind, delegates[protocol], status, kinds[status])
 	}
 }
 

@@ -11,6 +11,8 @@ import (
 const (
 	defaultModelID   = "edge-read-aloud"
 	contentTypeAudio = "audio/mpeg"
+	// providerName identifies this package in APIError.Provider.
+	providerName = "edge-speech"
 )
 
 // Option configures the Edge TTS provider.

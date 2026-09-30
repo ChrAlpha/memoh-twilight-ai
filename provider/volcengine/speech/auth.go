@@ -17,13 +17,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/felinics/twilight/sdk"
+	"github.com/felinics/twilight/internal/utils"
 )
 
 const (
@@ -98,20 +99,22 @@ func getToken(ctx context.Context, accessKey, secretKey, appKey string, httpClie
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", 0, fmt.Errorf("volcengine speech: token request: %w", sdk.NewAPIErrorFromResponse(resp))
+		return "", 0, fmt.Errorf("volcengine speech: get token: %w", utils.NewHTTPError(providerName, resp, decodeTokenError))
 	}
 
-	var result struct {
-		StatusCode int32  `json:"status_code"`
-		StatusText string `json:"status_text"`
-		Token      string `json:"token"`
-		ExpiresAt  int64  `json:"expires_at"`
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", 0, fmt.Errorf("volcengine speech: read token response: %w", err)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	var result struct {
+		Token     string `json:"token"`
+		ExpiresAt int64  `json:"expires_at"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
 		return "", 0, fmt.Errorf("volcengine speech: decode token response: %w", err)
 	}
 	if result.Token == "" {
-		return "", 0, fmt.Errorf("volcengine speech: empty token, status=%d msg=%s", result.StatusCode, result.StatusText)
+		return "", 0, fmt.Errorf("volcengine speech: get token: %w", bodyError(resp.Header, raw, decodeTokenError))
 	}
 	return result.Token, result.ExpiresAt, nil
 }

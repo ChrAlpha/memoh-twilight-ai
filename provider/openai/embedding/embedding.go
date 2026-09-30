@@ -5,11 +5,17 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
 	"github.com/felinics/twilight/sdk"
 )
 
-const defaultBaseURL = "https://api.openai.com/v1"
+const (
+	defaultBaseURL = "https://api.openai.com/v1"
+
+	// providerName identifies this package in APIError.Provider.
+	providerName = "openai-embedding"
+)
 
 type Provider struct {
 	headers        map[string]string
@@ -91,12 +97,14 @@ func (p *Provider) DoEmbed(ctx context.Context, params sdk.EmbedParams) (*sdk.Em
 	}
 
 	resp, err := utils.FetchJSON[embeddingResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/embeddings",
-		Headers: p.requestHeaders(ctx),
-		Prepare: p.prepareRequest,
-		Body:    req,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/embeddings",
+		Headers:     p.requestHeaders(ctx),
+		Prepare:     p.prepareRequest,
+		Body:        req,
+		Provider:    providerName,
+		DecodeError: errorformat.DecodeOpenAI,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openai: embeddings request failed: %w", err)
@@ -120,5 +128,6 @@ func (p *Provider) requestHeaders(ctx context.Context) map[string]string {
 	if p.prepareRequest == nil && p.apiKey != "" {
 		defaults = utils.AuthHeader(p.apiKey)
 	}
-	return utils.RequestHeaders(ctx, defaults, p.headers)
+	headers := utils.RequestHeaders(ctx, defaults, p.headers)
+	return utils.AddClientRequestID(ctx, headers, utils.ClientRequestIDHeader)
 }

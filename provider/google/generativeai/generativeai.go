@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/messagecompat"
 	"github.com/felinics/twilight/internal/utils"
 	"github.com/felinics/twilight/sdk"
@@ -128,10 +130,12 @@ func (p *Provider) Name() string {
 
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	resp, err := utils.FetchJSON[googleModelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Headers: p.requestHeaders(ctx),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models",
+		Headers:     p.requestHeaders(ctx),
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeGoogle,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("google: list models request failed: %w", err)
@@ -150,36 +154,41 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	return models, nil
 }
 
-func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
+func (p *Provider) Test(ctx context.Context) error {
 	_, err := utils.FetchJSON[googleModelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/models",
-		Query:   map[string]string{"pageSize": "1"},
-		Headers: p.requestHeaders(ctx),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/models",
+		Query:       map[string]string{"pageSize": "1"},
+		Headers:     p.requestHeaders(ctx),
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeGoogle,
 	})
 	if err != nil {
-		return sdk.ClassifyProbeError(err)
+		return fmt.Errorf("google: test request failed: %w", err)
 	}
-	return &sdk.ProviderTestResult{Status: sdk.ProviderStatusOK, Message: "ok"}
+	return nil
 }
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
 	modelPath := getModelPath(modelID)
 	_, err := utils.FetchJSON[googleModelObject](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodGet,
-		BaseURL: p.baseURL,
-		Path:    "/" + modelPath,
-		Headers: p.requestHeaders(ctx),
+		Method:      http.MethodGet,
+		BaseURL:     p.baseURL,
+		Path:        "/" + modelPath,
+		Headers:     p.requestHeaders(ctx),
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeGoogle,
 	})
 	if err == nil {
 		return &sdk.ModelTestResult{Supported: true, Message: "supported"}, nil
 	}
-	if !sdk.IsStatus(err, http.StatusNotFound) {
+	var apiErr *sdk.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
 		return nil, fmt.Errorf("google: test model request failed: %w", err)
 	}
 
-	status, probeErr := utils.ProbeStatus(ctx, p.httpClient, &utils.RequestOptions{
+	probeErr := utils.Probe(ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
 		Path:    "/" + modelPath + ":generateContent",
@@ -188,11 +197,14 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 			"contents":         []map[string]any{{"parts": []map[string]string{{"text": "hi"}}}},
 			"generationConfig": map[string]int{"maxOutputTokens": 1},
 		},
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeGoogle,
 	})
-	if probeErr != nil {
-		return nil, fmt.Errorf("google: probe model request failed: %w", probeErr)
+	result, err := sdk.ClassifyProbe(probeErr)
+	if err != nil {
+		return nil, fmt.Errorf("google: probe model request failed: %w", err)
 	}
-	return sdk.ClassifyProbeStatus(status)
+	return result, nil
 }
 
 func (p *Provider) ChatModel(id string) *sdk.Model {
@@ -234,11 +246,13 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 	modelPath := getModelPath(req.Model)
 
 	resp, err := utils.FetchJSON[generateResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:  http.MethodPost,
-		BaseURL: p.baseURL,
-		Path:    "/" + modelPath + ":generateContent",
-		Headers: p.requestHeaders(ctx),
-		Body:    body,
+		Method:      http.MethodPost,
+		BaseURL:     p.baseURL,
+		Path:        "/" + modelPath + ":generateContent",
+		Headers:     p.requestHeaders(ctx),
+		Body:        body,
+		Provider:    p.Name(),
+		DecodeError: errorformat.DecodeGoogle,
 	})
 	if err != nil {
 		return sdk.ModelResult{}, fmt.Errorf("google: generateContent request failed: %w", err)
@@ -611,6 +625,10 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 			lastThoughtSig     string
 			lastTextSig        string
 			streamModel        string
+			// done is set by a candidate's finishReason, or by a blockReason
+			// when the prompt is blocked and no candidates are returned
+			// (https://ai.google.dev/api/generate-content#PromptFeedback).
+			done bool
 		)
 
 		send := func(part sdk.StreamPart) bool {
@@ -658,17 +676,18 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		}
 
 		err := utils.FetchSSE(ctx, p.httpClient, &utils.RequestOptions{
-			Method:  http.MethodPost,
-			BaseURL: p.baseURL,
-			Path:    "/" + modelPath + ":streamGenerateContent",
-			Query:   map[string]string{"alt": "sse"},
-			Headers: p.requestHeaders(ctx),
-			Body:    body,
+			Method:      http.MethodPost,
+			BaseURL:     p.baseURL,
+			Path:        "/" + modelPath + ":streamGenerateContent",
+			Query:       map[string]string{"alt": "sse"},
+			Headers:     p.requestHeaders(ctx),
+			Body:        body,
+			Provider:    p.Name(),
+			DecodeError: errorformat.DecodeGoogle,
 		}, func(ev *utils.SSEEvent) error {
 			var chunk generateResponse
 			if err := json.Unmarshal([]byte(ev.Data), &chunk); err != nil {
-				send(&sdk.ErrorPart{Error: fmt.Errorf("google: unmarshal chunk: %w", err)})
-				return err
+				return fmt.Errorf("unmarshal chunk: %w", err)
 			}
 
 			if chunk.ModelVersion != "" {
@@ -678,6 +697,9 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 				usage = convertUsage(chunk.UsageMetadata)
 			}
 
+			if chunk.PromptFeedback != nil && chunk.PromptFeedback.BlockReason != "" {
+				done = true
+			}
 			if len(chunk.Candidates) == 0 {
 				return nil
 			}
@@ -774,6 +796,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 			if candidate.FinishReason != "" {
 				rawFinishReason = candidate.FinishReason
 				finishReason = mapFinishReason(rawFinishReason, hasToolCalls)
+				done = true
 
 				flush()
 
@@ -788,14 +811,19 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 			return nil
 		})
 
+		if err == nil && !done {
+			err = sdk.ErrStreamIncomplete
+		}
+		finish := finishReason
 		if err != nil {
 			send(&sdk.ErrorPart{Error: fmt.Errorf("google: stream failed: %w", err)})
+			finish = sdk.FinishReasonError
 		}
 
 		flush()
 
 		send(&sdk.FinishPart{
-			FinishReason:    finishReason,
+			FinishReason:    finish,
 			RawFinishReason: rawFinishReason,
 			TotalUsage:      usage,
 		})

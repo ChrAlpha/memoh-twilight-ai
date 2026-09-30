@@ -10,9 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/felinics/twilight/internal/errorformat"
 	"github.com/felinics/twilight/internal/utils"
 	"github.com/felinics/twilight/sdk"
 )
+
+// providerName identifies this package in APIError.Provider.
+const providerName = "alibabacloud-images"
 
 const (
 	defaultBaseURL      = "https://dashscope.aliyuncs.com/api/v1"
@@ -112,9 +116,6 @@ func (p *Provider) DoGenerate(ctx context.Context, params *sdk.ImageGenerationPa
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(resp.Code) != "" {
-		return nil, fmt.Errorf("alibabacloud images: generation request failed: %s: %s", resp.Code, resp.Message)
-	}
 	if hasImages(resp.Output.Choices) || hasResultImages(resp.Output.Results) {
 		return toImageResult(resp), nil
 	}
@@ -146,7 +147,7 @@ func (p *Provider) createTask(ctx context.Context, params *sdk.ImageGenerationPa
 		}
 	}
 
-	resp, err := utils.FetchJSON[dashScopeResponse](ctx, p.httpClient, &utils.RequestOptions{
+	resp, err := p.fetch(ctx, &utils.RequestOptions{
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
 		Path:    path,
@@ -168,7 +169,7 @@ func (p *Provider) generateQwenMultimodal(ctx context.Context, params *sdk.Image
 		Input:      promptMessagesInput(params.Prompt),
 		Parameters: imageParameters(params),
 	}
-	resp, err := utils.FetchJSON[dashScopeResponse](ctx, p.httpClient, &utils.RequestOptions{
+	resp, err := p.fetch(ctx, &utils.RequestOptions{
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
 		Path:    qwenMultimodalPath,
@@ -177,9 +178,6 @@ func (p *Provider) generateQwenMultimodal(ctx context.Context, params *sdk.Image
 	})
 	if err != nil {
 		return nil, fmt.Errorf("alibabacloud images: qwen multimodal generation request failed: %w", err)
-	}
-	if strings.TrimSpace(resp.Code) != "" {
-		return nil, fmt.Errorf("alibabacloud images: qwen multimodal generation failed: %s: %s", resp.Code, resp.Message)
 	}
 	if !hasImages(resp.Output.Choices) && !hasResultImages(resp.Output.Results) {
 		return nil, fmt.Errorf("alibabacloud images: qwen multimodal generation response did not include image output")
@@ -199,9 +197,6 @@ func (p *Provider) waitTask(ctx context.Context, taskID string) (*sdk.ImageResul
 		resp, err := p.getTask(waitCtx, taskID)
 		if err != nil {
 			return nil, err
-		}
-		if code := firstNonEmpty(resp.Code, resp.Output.Code); code != "" {
-			return nil, fmt.Errorf("alibabacloud images: task %s failed: %s: %s", taskID, code, firstNonEmpty(resp.Message, resp.Output.Message))
 		}
 
 		switch strings.ToUpper(strings.TrimSpace(resp.Output.TaskStatus)) {
@@ -228,14 +223,31 @@ func (p *Provider) waitTask(ctx context.Context, taskID string) (*sdk.ImageResul
 }
 
 func (p *Provider) getTask(ctx context.Context, taskID string) (*dashScopeResponse, error) {
-	resp, err := utils.FetchJSON[dashScopeResponse](ctx, p.httpClient, &utils.RequestOptions{
+	resp, err := p.fetch(ctx, &utils.RequestOptions{
 		Method:  http.MethodGet,
 		BaseURL: p.baseURL,
 		Path:    "/tasks/" + taskID,
 		Headers: utils.AuthHeader(p.apiKey),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("alibabacloud images: get task request failed: %w", err)
+		return nil, fmt.Errorf("alibabacloud images: task %s: %w", taskID, err)
+	}
+	return resp, nil
+}
+
+// fetch sends a DashScope request. DashScope also reports failures in a 2xx
+// body, as a code at the top level or, for a failed task, in its output
+// (https://help.aliyun.com/zh/model-studio/error-code); fetch returns those as
+// an *sdk.APIError with StatusCode 0.
+func (p *Provider) fetch(ctx context.Context, opts *utils.RequestOptions) (*dashScopeResponse, error) {
+	opts.Provider = providerName
+	opts.DecodeError = errorformat.DecodeDashScope
+	resp, header, body, err := utils.FetchJSONBody[dashScopeResponse](ctx, p.httpClient, opts)
+	if err != nil {
+		return nil, err
+	}
+	if firstNonEmpty(resp.Code, resp.Output.Code) != "" {
+		return nil, utils.NewBodyError(providerName, header, body, errorformat.DecodeDashScope)
 	}
 	return resp, nil
 }

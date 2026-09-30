@@ -8,8 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-
-	"github.com/felinics/twilight/sdk"
 )
 
 type RequestOptions struct {
@@ -20,6 +18,11 @@ type RequestOptions struct {
 	Query   map[string]string
 	Body    any
 	Prepare func(*http.Request) error
+
+	// Provider and DecodeError build the *sdk.APIError returned for a non-2xx
+	// response; see NewHTTPError.
+	Provider    string
+	DecodeError ErrorDecoder
 }
 
 func BuildRequest(ctx context.Context, opts *RequestOptions) (*http.Request, error) {
@@ -70,6 +73,14 @@ func BuildRequest(ctx context.Context, opts *RequestOptions) (*http.Request, err
 // FetchJSON sends a JSON request and decodes the response into type T.
 // Non-2xx responses are returned as *sdk.APIError.
 func FetchJSON[T any](ctx context.Context, client *http.Client, opts *RequestOptions) (*T, error) {
+	result, _, _, err := FetchJSONBody[T](ctx, client, opts)
+	return result, err
+}
+
+// FetchJSONBody is FetchJSON that also returns the response header and the raw
+// body, for an API that reports some failures as an error object inside a 2xx
+// body; see NewBodyError.
+func FetchJSONBody[T any](ctx context.Context, client *http.Client, opts *RequestOptions) (result *T, header http.Header, body []byte, err error) {
 	if opts.Headers == nil {
 		opts.Headers = make(map[string]string)
 	}
@@ -79,24 +90,28 @@ func FetchJSON[T any](ctx context.Context, client *http.Client, opts *RequestOpt
 
 	req, err := BuildRequest(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, nil, nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, sdk.NewAPIErrorFromResponse(resp)
+		return nil, nil, nil, NewHTTPError(opts.Provider, resp, opts.DecodeError)
 	}
 
-	var result T
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read response: %w", err)
 	}
-	return &result, nil
+	result = new(T)
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(result); err != nil {
+		return nil, nil, nil, fmt.Errorf("decode response: %w", err)
+	}
+	return result, resp.Header, body, nil
 }
 
 // FetchRaw sends a request and returns the raw *http.Response.
@@ -115,27 +130,24 @@ func FetchRaw(ctx context.Context, client *http.Client, opts *RequestOptions) (*
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
-		return nil, sdk.NewAPIErrorFromResponse(resp)
+		return nil, NewHTTPError(opts.Provider, resp, opts.DecodeError)
 	}
 
 	return resp, nil
 }
 
-// ProbeStatus sends a request and returns only the HTTP status code.
-// The response body is always drained and closed. This is useful for
-// lightweight endpoint probes where only reachability matters.
-func ProbeStatus(ctx context.Context, client *http.Client, opts *RequestOptions) (int, error) {
-	req, err := BuildRequest(ctx, opts)
+// Probe sends a request whose response body does not matter, such as a
+// minimal generation request that only checks a model is accepted. It returns
+// nil for a 2xx response and *sdk.APIError for any other status, which
+// sdk.ClassifyProbe then maps. A 2xx body is drained and discarded.
+func Probe(ctx context.Context, client *http.Client, opts *RequestOptions) error {
+	resp, err := FetchRaw(ctx, client, opts)
 	if err != nil {
-		return 0, err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("request failed: %w", err)
+		return err
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
-	return resp.StatusCode, nil
+	return nil
 }
 
 // BearerToken returns a formatted Bearer authorization header value.
