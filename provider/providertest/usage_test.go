@@ -127,7 +127,7 @@ func TestInputUsageContract(t *testing.T) {
 							got.InputTokenDetails != tc.detail || got.CachedInputTokens != tc.detail.CacheReadTokens {
 							t.Errorf("%s: usage = %+v, want input=%d output=%d details=%+v", label, got, tc.input, tc.output, tc.detail)
 						}
-						if (p.name == "anthropic" || p.name == "openai-responses") && got.CacheReadTokensReported != tc.reported {
+						if got.CacheReadTokensReported != tc.reported {
 							t.Errorf("%s: cache reporting = %t, want %t", label, got.CacheReadTokensReported, tc.reported)
 						}
 						d := got.InputTokenDetails
