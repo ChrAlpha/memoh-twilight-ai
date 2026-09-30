@@ -72,6 +72,14 @@ func TestInputUsageContract(t *testing.T) {
 			input: 100, output: 5, detail: sdk.InputTokenDetail{NoCacheTokens: 100},
 		},
 		{
+			name: "details without cache read",
+			wire: map[string]string{
+				"chat":      `{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{}}`,
+				"responses": `{"input_tokens":100,"output_tokens":5,"input_tokens_details":{}}`,
+			},
+			input: 100, output: 5, detail: sdk.InputTokenDetail{NoCacheTokens: 100},
+		},
+		{
 			name:     "zero cache details",
 			reported: true,
 			wire: map[string]string{
