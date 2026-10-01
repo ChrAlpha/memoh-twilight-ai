@@ -469,7 +469,9 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		}
 
 		sp.flush()
-		sp.emitFinishStep()
+		if err == nil {
+			sp.emitFinishStep()
+		}
 
 		sp.send(&sdk.FinishPart{
 			FinishReason:    finish,
