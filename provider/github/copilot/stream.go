@@ -14,15 +14,16 @@ type streamProcessor struct {
 	reasoningStartSent bool
 	// reasoningOpaque is the block's token, delivered on a delta and applied
 	// when the block closes.
-	reasoningOpaque  string
-	rawFinishReason  string
-	finishReason     sdk.FinishReason
-	usage            sdk.Usage
-	chunkID          string
-	chunkModel       string
-	chunkCreated     int64
-	flushed          bool
-	pendingToolCalls map[int]*streamingToolCall
+	reasoningOpaque   string
+	rawFinishReason   string
+	finishReason      sdk.FinishReason
+	usage             sdk.Usage
+	chunkID           string
+	chunkModel        string
+	chunkCreated      int64
+	flushed           bool
+	finishStepPending bool
+	pendingToolCalls  map[int]*streamingToolCall
 	// done is set by the chunk that carries a finish_reason or by the [DONE]
 	// sentinel that follows it; either one means the response is complete.
 	done bool
@@ -203,6 +204,14 @@ func (sp *streamProcessor) processFinishReason(choice *chatChunkChoice) {
 	sp.done = true
 
 	sp.flush()
+	sp.finishStepPending = true
+}
+
+func (sp *streamProcessor) emitFinishStep() {
+	if !sp.finishStepPending {
+		return
+	}
+	sp.finishStepPending = false
 
 	sp.send(&sdk.FinishStepPart{
 		FinishReason:    sp.finishReason,
