@@ -3,17 +3,15 @@ package loop
 import (
 	"context"
 	"errors"
-	"testing"
-	"time"
-
+	"github.com/felinics/twilight/agentcore/testutil/local"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
+	"github.com/felinics/twilight/agentcore/prompt"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/module"
-	"github.com/felinics/twilight/agentcore/prompt"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
@@ -22,7 +20,8 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/testutil/local"
+	"testing"
+	"time"
 )
 
 const (
@@ -92,7 +91,7 @@ func (s *testStack) writer(t testing.TB) writer.Writer {
 	return w
 }
 
-// createRun appends the Start group of one Run with a seed input (RUN-NEW-1).
+// createRun appends the Start group of one Run with a seed input.
 func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 	t.Helper()
 	newRun, err := BuildNewRun(runID, "")
@@ -155,7 +154,7 @@ func loadState(t testing.TB, rt *sessionstore.SessionRunStore, w writer.Writer, 
 }
 
 // newLoop builds a Loop over a local.LocalExecutor for tests; the executor no
-// longer reads frozen bodies (RUN-EXE-7), so the runtime is not wired in.
+// longer reads frozen bodies, so the runtime is not wired in.
 func newLoop(t testing.TB, sink EventSink, models local.ModelCatalog, tools local.ToolCatalog, builder prompt.Builder, settings Settings, streaming bool) (*Loop, error) {
 	if models == nil {
 		return nil, errors.New("agent: loop: nil model catalog")

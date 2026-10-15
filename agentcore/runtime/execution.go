@@ -35,23 +35,30 @@ type ExecutionSources struct {
 // ExecutionConfig composes one Execution: the effect port it drives, the
 // preset identities it resolves and the policies of the drive chain.
 type ExecutionConfig struct {
-	// Executor is the effect layer port (RUN-EXE-3): required.
+	// Executor is the effect layer port: required.
 	Executor effect.ExecutionPort
 	// Presets is the catalog of preset identities; nil selects an
 	// in-memory catalog.
 	Presets preset.Catalog
-	// PromptBuilders resolves each preset's PromptBuilderRef (DEC-CAT):
+	// PromptBuilders resolves each preset's PromptBuilderRef:
 	// required. The runtime ships no builder; the agent built on it supplies
 	// its catalog (agent/prompt.DefaultPromptBuilders for the reference agent).
 	PromptBuilders *prompt.Catalog
 	// MissingEffects is the takeover policy for an Executing effect the
-	// Executor holds nothing for (RUN-CMT-7): the zero value disposes it,
+	// Executor holds nothing: the zero value disposes it,
 	// reconcile.RedispatchMissing hands it to the Executor again within a
-	// budget (RUN-EXE-15) and requires Redispatches.
+	// budget and requires Redispatches.
 	MissingEffects reconcile.MissingPolicy
 	// Redispatches is the dispatch ledger RedispatchMissing writes; durable
-	// like every store (OWN-PRT-3). Unused under DisposeMissing.
+	// like every store. Unused under DisposeMissing.
 	Redispatches redispatch.Store
+	// MaxRedispatches bounds redispatches per effect; zero selects the
+	// reconciler's default.
+	MaxRedispatches int
+	// RedispatchRetry is the interval between reconciliations after the
+	// executor safely refused a redispatch before the effect boundary; zero
+	// selects the recovery default. Unknown boundaries are not redispatched.
+	RedispatchRetry time.Duration
 	// Planner, when set, is consulted between the steps of every Run with
 	// the Writer of the Session being driven: the application's in-turn
 	// context policy.
@@ -60,8 +67,8 @@ type ExecutionConfig struct {
 	// they answer; nil answers none.
 	Responders map[run.ToolRef]driver.Responder
 	// TargetResolver supplies the opaque resource target of each effect
-	// (RUN-LOP-9). It belongs to the application's resource layer; nil
-	// gives every effect no target (APP-TGT-1).
+	// It belongs to the application's resource layer; nil
+	// gives every effect no target.
 	TargetResolver loop.TargetResolver
 	// Fail receives failures of work the Execution's components do outside
 	// any caller's call, such as settling a reattached Outcome; nil
@@ -109,8 +116,20 @@ func NewExecution(cfg ExecutionConfig, src ExecutionSources) (*Execution, error)
 	if cfg.PromptBuilders == nil {
 		return nil, errors.New("runtime: a prompt builder catalog is required (ExecutionConfig.PromptBuilders); the runtime ships no default")
 	}
-	if cfg.MissingEffects == reconcile.RedispatchMissing && cfg.Redispatches == nil {
-		return nil, errors.New("runtime: MissingEffects=redispatch requires a dispatch ledger (ExecutionConfig.Redispatches, RUN-EXE-15)")
+	switch cfg.MissingEffects {
+	case reconcile.DisposeMissing:
+	case reconcile.RedispatchMissing:
+		if cfg.Redispatches == nil {
+			return nil, errors.New("runtime: MissingEffects=redispatch requires a dispatch ledger (ExecutionConfig.Redispatches)")
+		}
+	default:
+		return nil, errors.New("runtime: unknown MissingEffects policy")
+	}
+	if cfg.MaxRedispatches < 0 {
+		return nil, errors.New("runtime: MaxRedispatches must not be negative")
+	}
+	if cfg.RedispatchRetry < 0 {
+		return nil, errors.New("runtime: RedispatchRetry must not be negative")
 	}
 	presets := cfg.Presets
 	if presets == nil {
@@ -119,7 +138,7 @@ func NewExecution(cfg ExecutionConfig, src ExecutionSources) (*Execution, error)
 	x := &Execution{Executor: cfg.Executor, Presets: presets, Progress: observe.NewProgresses()}
 	x.Watcher = &effect.Watcher{Port: cfg.Executor, Probe: cfg.OrphanProbe}
 	// Failures the components report outside any caller's call reach the
-	// caller's callback and the Session's transient stream (OBS-1).
+	// caller's callback and the Session's transient stream.
 	fail := cfg.Fail
 	if fail == nil {
 		fail = func(session.SessionID, error) {}
@@ -128,11 +147,12 @@ func NewExecution(cfg ExecutionConfig, src ExecutionSources) (*Execution, error)
 		fail(sid, err)
 		x.Progress.Failed(sid, err)
 	}
-	// A nil resolver gives every effect no target (APP-TGT-1).
+	// A nil resolver gives every effect no target.
 	loops := &driver.Loops{Executor: cfg.Executor, Presets: presets, PromptBuilders: cfg.PromptBuilders, Targets: cfg.TargetResolver,
 		Sources: prompt.Sources{Projections: src.Projections, Content: src.Content}, Watcher: x.Watcher, Planner: cfg.Planner}
 	x.Recovery = &driver.Recovery{Runs: src.Runs, Executor: cfg.Executor, Loops: loops, Watcher: x.Watcher, Fail: report,
-		MissingEffects: cfg.MissingEffects, Redispatches: cfg.Redispatches, OrphanProbe: cfg.OrphanProbe, Sink: progressSink{x.Progress}}
+		MissingEffects: cfg.MissingEffects, Redispatches: cfg.Redispatches, MaxRedispatches: cfg.MaxRedispatches,
+		RedispatchRetry: cfg.RedispatchRetry, OrphanProbe: cfg.OrphanProbe, Sink: progressSink{x.Progress}}
 	var responders *driver.Responders
 	if len(cfg.Responders) > 0 {
 		responders = &driver.Responders{Runs: src.Runs, Tools: cfg.Responders, Fail: report}
@@ -142,7 +162,7 @@ func NewExecution(cfg ExecutionConfig, src ExecutionSources) (*Execution, error)
 }
 
 // Open runs the takeover disposition for a Session whose Writer a host just
-// acquired (RUN-EXE-8 order): the returned count is the recovery commands
+// acquired (order): the returned count is the recovery commands
 // the disposition issued.
 func (x *Execution) Open(ctx context.Context, w writer.Writer) (int, error) {
 	return x.Recovery.Open(ctx, w)

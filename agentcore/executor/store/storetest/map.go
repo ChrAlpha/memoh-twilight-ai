@@ -20,7 +20,7 @@ import (
 // Map is executionstore.Store over Go maps. The zero value is ready; Now is
 // the lease clock, nil selecting time.Now. Every method holds one mutex for
 // its whole read-fold-judge-write, which is the transaction the contract
-// requires (RUN-EXE-6).
+// requires.
 type Map struct {
 	Now func() time.Time
 
@@ -120,8 +120,7 @@ func (m *Map) Read(_ context.Context, key effect.AssignmentKey, from ledger.Comm
 	if from >= ledger.CommitSeq(len(l.commits)) {
 		return nil, l.head(), nil
 	}
-	out := make([]ledger.Commit, uint64(len(l.commits))-uint64(from))
-	copy(out, l.commits[from:])
+	out := append([]ledger.Commit(nil), l.commits[from:]...)
 	return out, l.head(), nil
 }
 

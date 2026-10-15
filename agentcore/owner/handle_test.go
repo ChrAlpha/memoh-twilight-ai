@@ -5,14 +5,13 @@ import (
 	"errors"
 	"testing"
 
-	"time"
-
+	"github.com/felinics/twilight/agentcore/testutil/local"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/chatlog"
+	"github.com/felinics/twilight/agentcore/prompt"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/owner"
-	"github.com/felinics/twilight/agentcore/prompt"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/sessionstore"
 	rt "github.com/felinics/twilight/agentcore/runtime"
@@ -20,7 +19,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/writer"
 	"github.com/felinics/twilight/agentcore/sessionkernel"
-	"github.com/felinics/twilight/agentcore/testutil/local"
+	"time"
 )
 
 // newAuthority is the deployment every owner test starts from: a local
@@ -66,7 +65,7 @@ func newAuthority(t *testing.T) (*owner.Owner, *sessionkernel.Kernel) {
 	return a, k
 }
 
-// OWN-HDL-1: one generation of ownership at a time. A second Open of an
+// one generation of ownership at a time. A second Open of an
 // open Session is refused; a Handle whose generation was released does not
 // close the generation that replaced it; reads need no Handle.
 func TestHandleGenerations(t *testing.T) {

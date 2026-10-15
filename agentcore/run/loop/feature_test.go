@@ -10,6 +10,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/testutil/local"
+	"github.com/felinics/twilight/agentcore/testutil/sdkconv"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
@@ -24,8 +26,6 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/testutil/local"
-	"github.com/felinics/twilight/agentcore/testutil/sdkconv"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
 	"testing"
@@ -516,7 +516,7 @@ func (f *Feature) facts() []run.Fact {
 }
 
 // withEffect fills the derived effect identity of a start or recovery that
-// names none (RUN-WIR-1): the model effect from the current step's rejected
+// names none: the model effect from the current step's rejected
 // count, the tool effect from the call, the recovered effect from the step.
 func (f *Feature) withEffect(cmd run.AgentCommand, snap store.Snapshot) run.AgentCommand {
 	switch c := cmd.(type) {
