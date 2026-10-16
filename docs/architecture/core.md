@@ -120,8 +120,9 @@ recovered and replay is permitted.
 ### Effect
 
 An Effect is a request for external work. Model calls and tool calls are
-represented as effects. The Run assigns each effect a stable identity and
-records its lifecycle.
+represented as effects. The owning protocol assigns each effect a stable
+identity and records its lifecycle: a Run for conversation steps, or a Session
+compaction operation for a context-maintenance summary.
 
 ### Execution
 
@@ -134,8 +135,8 @@ handle formats remain inside the executor and provider layers.
 ### Outcome
 
 An Outcome is the terminal result observed from an Execution. The executor
-reports success, failure, cancellation, or an unavailable result. The Run
-commits the outcome and performs its next transition.
+reports success, failure, cancellation, or an unavailable result. The owning
+protocol commits the outcome and performs its next transition.
 
 An uncertain dispatch remains recoverable until the backend provides a reliable
 observation. An interrupted request therefore keeps its settlement unresolved.
