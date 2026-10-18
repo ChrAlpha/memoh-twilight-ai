@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
 	"github.com/felinics/twilight/agentcore/ledger"
 
 	"github.com/felinics/twilight/agentcore/jsonstable"
@@ -17,50 +18,37 @@ type ProjectionDefinition struct {
 	Initial    func() (any, error)
 	Apply      func(any, DecodedEvent) (any, error)
 	StateCodec PayloadCodec
-	// Inherits decides, per logical stream, what the fold takes from the
-	// commits a fork inherits. nil follows the lineage each
-	// stream's domain declared: inherited batches of Inherited domains
-	// are folded and those of Own domains are skipped, so a
-	// child never interprets its parent's execution history as its own. A
-	// projection whose content lives in another module's segment-lineage
-	// facts declares InheritAll, or names the domains it takes with
-	// InheritStreams.
-	Inherits InheritPolicy
-	// Authoritative marks a projection a module guards its stream's
-	// invariants with: a provisional commit its fold cannot fold is refused
-	// before anything is persisted. Every other projection is a derived read
-	// model: a fold failure marks it unhealthy for the Writer's lifetime and
-	// never blocks the facts. Write-time invariants belong to
-	// the Writer's decision, not to projections; an authoritative fold
+	// InheritanceOverride decides which batches from an inherited prefix this
+	// projection folds. A nil override follows the owning stream domain's
+	// Inheritance declaration. InheritAll and InheritNone override it for every
+	// domain.
+	InheritanceOverride InheritancePolicy
+	// RequiredForCommit marks a projection whose fold must accept a
+	// provisional commit before anything is persisted. Replay failures also
+	// prevent the Writer from opening. Only trusted core modules may set it.
+	// Every other projection is a derived read model: a fold failure marks it
+	// Writer's lifetime and never blocks the facts. Write-time invariants
+	// belong to the Writer's decision, not to projections; a required fold
 	// failing is a defect, not a business rejection.
-	Authoritative bool
+	RequiredForCommit bool
 }
 
-// InheritPolicy decides whether a projection folds the batches of one
-// logical stream from a fork's inherited prefix.
-type InheritPolicy func(ledger.Domain) bool
+// InheritancePolicy selects how a projection reads an inherited prefix for a
+// particular stream domain. A nil policy means the domain's declaration is
+// used instead.
+type InheritancePolicy func(ledger.Domain) bool
 
 // InheritAll folds every batch of inherited commits.
 func InheritAll(ledger.Domain) bool { return true }
 
-// InheritStreams folds the listed stream domains of inherited commits.
-func InheritStreams(domains ...string) InheritPolicy {
-	return func(stream ledger.Domain) bool {
-		for _, d := range domains {
-			if stream.Name == d {
-				return true
-			}
-		}
-		return false
-	}
-}
+// InheritNone skips every batch of inherited commits.
+func InheritNone(ledger.Domain) bool { return false }
 
-// inherits applies the definition's policy; nil follows the lineage the
-// stream's domain declared, and a domain no module declared is not
-// inherited.
+// inherits applies the projection policy. A missing policy follows the
+// inheritance declared by the stream's owning module.
 func (r *Registry) inherits(d *ProjectionDefinition, stream ledger.Domain) bool {
-	if d.Inherits != nil {
-		return d.Inherits(stream)
+	if d.InheritanceOverride != nil {
+		return d.InheritanceOverride(stream)
 	}
 	_, def, ok := r.LookupStream(stream.Name)
 	return ok && def.Inheritance == Inherited
@@ -167,29 +155,29 @@ func (r *Registry) applyEvent(s *ProjectionScope, state any, pos ledger.Position
 	return next, nil
 }
 
-// checkpointDomain namespaces the digest of an authoritative checkpoint.
+// checkpointDomain namespaces the digest of a required-for-commit checkpoint.
 const checkpointDomain = "twilight/projection-checkpoint"
 
-// sealedCheckpoint is the cache Value of an authoritative projection: the
+// sealedCheckpoint is the cache Value of a required-for-commit projection: the
 // encoded state and a digest over (projection, version, through, state).
 type sealedCheckpoint struct {
 	State  json.RawMessage   `json:"state"`
 	Digest jsonstable.Digest `json:"digest"`
 }
 
-// checkpointDigest is the digest an authoritative entry must carry.
+// checkpointDigest is the digest a required-for-commit entry must carry.
 func checkpointDigest(id ProjectionID, v ProjectionVersion, through ledger.Head, state jsonstable.Value) jsonstable.Digest {
 	preimage, _ := jsonstable.EncodeTypedPayload(1, checkpointDomain, []string{string(id), fmt.Sprint(uint64(v)), fmt.Sprint(uint64(through.Next)), string(state.Bytes())})
 	return jsonstable.DigestBytes(preimage)
 }
 
-// SealCheckpoint wraps an authoritative projection's encoded state with its
+// SealCheckpoint wraps a required-for-commit projection's encoded state with its
 // digest for the cache.
 func SealCheckpoint(id ProjectionID, v ProjectionVersion, through ledger.Head, state jsonstable.Value) (jsonstable.Value, error) {
 	return jsonstable.FromValue(sealedCheckpoint{State: state.Bytes(), Digest: checkpointDigest(id, v, through, state)})
 }
 
-// OpenCheckpoint unwraps a sealed authoritative entry, verifying its digest;
+// OpenCheckpoint unwraps a sealed required-for-commit entry, verifying its digest;
 // ok is false when the entry is not a checkpoint of this projection at
 // through, and the caller treats it as absent.
 func OpenCheckpoint(id ProjectionID, v ProjectionVersion, through ledger.Head, sealed jsonstable.Value) (jsonstable.Value, bool) {
