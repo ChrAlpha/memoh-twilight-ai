@@ -1,0 +1,20 @@
+{
+  "label": "twilight",
+  "repo": "/workspaces/Memoh/memoh-twilight-ai",
+  "remote": "origin",
+  "namespace": "backup/local-20261109T074808Z/twilight",
+  "refs": [
+    {
+      "source": "refs/heads/main",
+      "sha": "4d62b20faabd8ed59635fda5b114d4c90e6bf7f9",
+      "target": "refs/heads/backup/local-20261109T074808Z/twilight/heads/main"
+    },
+    {
+      "source": "/workspaces/Memoh/memoh-twilight-ai HEAD",
+      "sha": "4d62b20faabd8ed59635fda5b114d4c90e6bf7f9",
+      "target": "refs/heads/backup/local-20261109T074808Z/twilight/worktrees/memoh-twilight-ai-c0224dd0/head"
+    }
+  ],
+  "snapshots": [],
+  "excluded_paths": []
+}
